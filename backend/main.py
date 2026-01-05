@@ -64,6 +64,12 @@ def create_config_from_env():
     use_env = os.getenv("USE_ENV_CONFIG", "false").lower() == "true"
 
     if use_env:
+        def _split_env_list(var_name: str) -> list[str]:
+            value = os.getenv(var_name, "")
+            if not value:
+                return []
+            return [item.strip() for item in value.split(",") if item.strip()]
+
         # Build config from environment variables
         email = EmailConfig(
             enabled=os.getenv("EMAIL_ENABLED", "true").lower() == "true",
@@ -86,6 +92,8 @@ def create_config_from_env():
             preferred_tech_stack=os.getenv("PREFERRED_TECH_STACK", "").split(",") if os.getenv("PREFERRED_TECH_STACK") else [],
             location_preference=os.getenv("LOCATION_PREFERENCE", "remote"),
             job_boards=[],  # Will use defaults if empty
+            greenhouse_boards=_split_env_list("GREENHOUSE_BOARDS"),
+            lever_companies=_split_env_list("LEVER_COMPANIES"),
             max_job_age_days=int(os.getenv("MAX_JOB_AGE_DAYS", "7"))
         )
 

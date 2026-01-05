@@ -213,12 +213,20 @@ job_preferences:
   location_preference: "remote"  # "remote", "hybrid", "onsite", or "any"
 
   # Optional: Specify which job boards to use
-  # If empty, uses all defaults
+  # If empty, uses all defaults (RemoteOK, We Work Remotely, Remotive, Greenhouse, Lever)
   job_boards:
     - "remoteok"
     - "remotive"
     - "weworkremotely"
+    - "greenhouse"
+    - "lever"
     # - "boolean"  # Disabled in MVP
+
+  # Optional: Company boards for Greenhouse/Lever
+  greenhouse_boards:
+    - "stripe"
+  lever_companies:
+    - "openai"
 
   # Maximum job age
   max_job_age_days: 7
@@ -257,6 +265,8 @@ jobscout/
 │       ├── base.py          # Base classes
 │       ├── rss_feeds.py     # RemoteOK, We Work Remotely
 │       ├── remotive_api.py  # Remotive API
+│       ├── greenhouse_api.py # Greenhouse boards API
+│       ├── lever_api.py     # Lever postings API
 │       └── boolean_search.py # Boolean search (Greenhouse/Lever)
 ├── tests/
 │   ├── test_scoring.py

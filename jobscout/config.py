@@ -35,6 +35,8 @@ class JobPreferences:
     preferred_tech_stack: List[str] = field(default_factory=list)
     location_preference: Literal["remote", "hybrid", "onsite", "any"] = "any"
     job_boards: List[str] = field(default_factory=list)  # Empty = use all defaults
+    greenhouse_boards: List[str] = field(default_factory=list)
+    lever_companies: List[str] = field(default_factory=list)
     max_job_age_days: int = 7
 
 

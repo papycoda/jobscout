@@ -15,6 +15,8 @@ from jobscout.job_sources.base import JobListing
 from jobscout.job_sources.rss_feeds import RemoteOKSource, WeWorkRemotelySource
 from jobscout.job_sources.remotive_api import RemotiveSource
 from jobscout.job_sources.boolean_search import BooleanSearchSource
+from jobscout.job_sources.greenhouse_api import GreenhouseSource
+from jobscout.job_sources.lever_api import LeverSource
 from jobscout.job_parser import JobParser, ParsedJob
 from jobscout.filters import HardExclusionFilters
 from jobscout.scoring import JobScorer, ScoredJob
@@ -165,7 +167,7 @@ class JobScoutAdapter:
 
         boards = self.config.job_preferences.job_boards
         if not boards:
-            boards = ["remoteok", "weworkremotely", "remotive"]
+            boards = ["remoteok", "weworkremotely", "remotive", "greenhouse", "lever"]
 
         for board in boards:
             try:
@@ -190,6 +192,12 @@ class JobScoutAdapter:
             return source.fetch_jobs(limit=50)
         elif board_lower == "remotive":
             source = RemotiveSource("Remotive")
+            return source.fetch_jobs(limit=50)
+        elif board_lower == "greenhouse":
+            source = GreenhouseSource(self.config.job_preferences.greenhouse_boards)
+            return source.fetch_jobs(limit=50)
+        elif board_lower == "lever":
+            source = LeverSource(self.config.job_preferences.lever_companies)
             return source.fetch_jobs(limit=50)
         else:
             logger.warning(f"Unknown job board: {board}")

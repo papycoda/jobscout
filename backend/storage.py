@@ -4,6 +4,7 @@ import os
 import json
 import uuid
 import logging
+import time
 from pathlib import Path
 from typing import List, Optional, Dict
 
@@ -22,6 +23,9 @@ class Storage:
 
         self.base_dir = Path(base_dir)
         self._base_dir_initialized = False
+        self._use_memory_runs = False
+        self._memory_runs: Dict[str, Dict[str, object]] = {}
+        self._memory_run_timestamps: Dict[str, float] = {}
 
         # Create subdirectories (allow override via env vars)
         self.resumes_dir = Path(os.getenv("RESUMES_DIR", str(self.base_dir / "resumes")))
@@ -43,6 +47,12 @@ class Storage:
             except PermissionError:
                 logger.error(f"Permission denied creating {self.base_dir}. Render disk must be mounted first.")
                 raise
+
+    def _store_run_in_memory(self, run_id: str, key: str, value: object) -> None:
+        """Store run data in memory as a fallback."""
+        entry = self._memory_runs.setdefault(run_id, {})
+        entry[key] = value
+        self._memory_run_timestamps[run_id] = time.time()
 
     def get_config_path(self) -> Path:
         """Get path to config.yaml."""
@@ -111,35 +121,78 @@ class Storage:
 
         Returns: (run_id, run_dir_path)
         """
-        self._ensure_directories()
-
         run_id = uuid.uuid4().hex
         run_dir = self.runs_dir / run_id
-        run_dir.mkdir(exist_ok=True)
+        try:
+            self._ensure_directories()
+            run_dir.mkdir(exist_ok=True)
+        except (PermissionError, OSError):
+            if not self._use_memory_runs:
+                logger.warning(
+                    f"Run storage unavailable at {self.runs_dir}; using in-memory runs.",
+                    exc_info=True
+                )
+            self._use_memory_runs = True
 
         return run_id, run_dir
 
     def save_run_jobs(self, run_dir: Path, jobs: List[Dict]) -> None:
         """Save matching jobs to jobs.json."""
+        run_id = run_dir.name
+        if self._use_memory_runs:
+            self._store_run_in_memory(run_id, "jobs", jobs)
+            return
+
         jobs_path = run_dir / "jobs.json"
-        jobs_path.write_text(json.dumps(jobs, indent=2, default=str))
+        try:
+            jobs_path.write_text(json.dumps(jobs, indent=2, default=str))
+        except (PermissionError, OSError):
+            logger.warning(f"Failed to write jobs for run {run_id}; using in-memory storage.", exc_info=True)
+            self._use_memory_runs = True
+            self._store_run_in_memory(run_id, "jobs", jobs)
 
     def save_run_filtered_jobs(self, run_dir: Path, filtered_jobs: List[Dict]) -> None:
         """Save filtered jobs to filtered_jobs.json."""
+        run_id = run_dir.name
+        if self._use_memory_runs:
+            self._store_run_in_memory(run_id, "filtered_jobs", filtered_jobs)
+            return
+
         filtered_path = run_dir / "filtered_jobs.json"
-        filtered_path.write_text(json.dumps(filtered_jobs, indent=2, default=str))
+        try:
+            filtered_path.write_text(json.dumps(filtered_jobs, indent=2, default=str))
+        except (PermissionError, OSError):
+            logger.warning(
+                f"Failed to write filtered jobs for run {run_id}; using in-memory storage.",
+                exc_info=True
+            )
+            self._use_memory_runs = True
+            self._store_run_in_memory(run_id, "filtered_jobs", filtered_jobs)
 
     def save_run_meta(self, run_dir: Path, meta: Dict) -> None:
         """Save run metadata to run_meta.json."""
+        run_id = meta.get("run_id", run_dir.name)
+        if self._use_memory_runs:
+            self._store_run_in_memory(run_id, "meta", meta)
+            return
+
         meta_path = run_dir / "run_meta.json"
-        meta_path.write_text(json.dumps(meta, indent=2, default=str))
+        try:
+            meta_path.write_text(json.dumps(meta, indent=2, default=str))
+        except (PermissionError, OSError):
+            logger.warning(
+                f"Failed to write run metadata for {run_id}; using in-memory storage.",
+                exc_info=True
+            )
+            self._use_memory_runs = True
+            self._store_run_in_memory(run_id, "meta", meta)
 
     def load_run_meta(self, run_id: str) -> Optional[Dict]:
         """Load run metadata by run ID."""
         meta_path = self.runs_dir / run_id / "run_meta.json"
 
         if not meta_path.exists():
-            return None
+            return self._memory_runs.get(run_id, {}).get("meta")
 
         return json.loads(meta_path.read_text())
 
@@ -148,7 +201,7 @@ class Storage:
         jobs_path = self.runs_dir / run_id / "jobs.json"
 
         if not jobs_path.exists():
-            return None
+            return self._memory_runs.get(run_id, {}).get("jobs")
 
         return json.loads(jobs_path.read_text())
 
@@ -157,7 +210,7 @@ class Storage:
         filtered_path = self.runs_dir / run_id / "filtered_jobs.json"
 
         if not filtered_path.exists():
-            return None
+            return self._memory_runs.get(run_id, {}).get("filtered_jobs")
 
         return json.loads(filtered_path.read_text())
 
@@ -166,6 +219,8 @@ class Storage:
         run_dir = self.runs_dir / run_id
 
         if not run_dir.exists():
+            if run_id in self._memory_runs:
+                return run_dir
             return None
 
         return run_dir
@@ -224,11 +279,30 @@ class Storage:
 
     def get_latest_run_id(self) -> Optional[str]:
         """Get the most recent run ID."""
-        run_dirs = [d for d in self.runs_dir.iterdir() if d.is_dir()]
+        try:
+            run_dirs = [d for d in self.runs_dir.iterdir() if d.is_dir()]
+        except FileNotFoundError:
+            run_dirs = []
 
-        if not run_dirs:
+        latest_disk_id = None
+        latest_disk_time = None
+        if run_dirs:
+            latest_dir = max(run_dirs, key=lambda d: d.stat().st_mtime)
+            latest_disk_id = latest_dir.name
+            latest_disk_time = latest_dir.stat().st_mtime
+
+        latest_memory_id = None
+        latest_memory_time = None
+        if self._memory_run_timestamps:
+            latest_memory_id = max(self._memory_run_timestamps, key=self._memory_run_timestamps.get)
+            latest_memory_time = self._memory_run_timestamps[latest_memory_id]
+
+        if latest_disk_time is None and latest_memory_time is None:
             return None
-
-        # Sort by modification time
-        latest_dir = max(run_dirs, key=lambda d: d.stat().st_mtime)
-        return latest_dir.name
+        if latest_disk_time is None:
+            return latest_memory_id
+        if latest_memory_time is None:
+            return latest_disk_id
+        if latest_memory_time >= latest_disk_time:
+            return latest_memory_id
+        return latest_disk_id

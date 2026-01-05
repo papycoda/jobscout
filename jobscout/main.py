@@ -8,6 +8,8 @@ from .job_sources.base import JobListing
 from .job_sources.rss_feeds import RemoteOKSource, WeWorkRemotelySource
 from .job_sources.remotive_api import RemotiveSource
 from .job_sources.boolean_search import BooleanSearchSource
+from .job_sources.greenhouse_api import GreenhouseSource
+from .job_sources.lever_api import LeverSource
 from .job_parser import JobParser
 from .filters import HardExclusionFilters
 from .scoring import JobScorer
@@ -115,7 +117,7 @@ class JobScout:
         # Default sources if none specified
         boards = self.config.job_preferences.job_boards
         if not boards:
-            boards = ["remoteok", "weworkremotely", "remotive", "boolean"]
+            boards = ["remoteok", "weworkremotely", "remotive", "greenhouse", "lever", "boolean"]
 
         # Fetch from each source
         for board in boards:
@@ -143,6 +145,12 @@ class JobScout:
 
         elif board_lower == "remotive":
             source = RemotiveSource("Remotive")
+            return source.fetch_jobs(limit=50)
+        elif board_lower == "greenhouse":
+            source = GreenhouseSource(self.config.job_preferences.greenhouse_boards)
+            return source.fetch_jobs(limit=50)
+        elif board_lower == "lever":
+            source = LeverSource(self.config.job_preferences.lever_companies)
             return source.fetch_jobs(limit=50)
 
         elif board_lower == "boolean":
