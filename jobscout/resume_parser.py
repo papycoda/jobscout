@@ -1,9 +1,10 @@
 """Resume parsing and skill extraction."""
 
 import re
+from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Set, Dict
+from typing import List, Set, Dict, Optional, Tuple
 import docx
 import pdfplumber
 
@@ -84,6 +85,44 @@ SENIORITY_KEYWORDS = {
     "junior": ["junior", "jr", "entry level", "associate"],
     "mid": ["mid-level", "midlevel", "mid level", "intermediate"],
     "senior": ["senior", "sr", "lead", "principal", "staff"],
+}
+
+ROLE_TITLE_HINTS = [
+    "engineer",
+    "developer",
+    "architect",
+    "manager",
+    "scientist",
+    "analyst",
+    "devops",
+    "sre",
+]
+
+MONTHS = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
 }
 
 
@@ -177,9 +216,9 @@ class ResumeParser:
     def _extract_years_experience(self, text: str) -> float:
         """Extract approximate years of experience."""
         patterns = [
-            r'(\d+)\+?\s*years?\s*(of)?\s*experience',
-            r'experience?\s*:\s*(\d+)\+?\s*years?',
-            r'(\d+)\s*years?\s*(of)?\s*(professional|work|industry)?\s*experience',
+            r'(\d+(?:\.\d+)?)\+?\s*years?\s*(of)?\s*experience',
+            r'experience?\s*:\s*(\d+(?:\.\d+)?)\+?\s*years?',
+            r'(\d+(?:\.\d+)?)\s*years?\s*(of)?\s*(professional|work|industry)?\s*experience',
         ]
 
         max_years = 0.0
@@ -192,16 +231,23 @@ class ResumeParser:
                 except (ValueError, IndexError):
                     continue
 
-        return max_years
+        if max_years > 0:
+            return max_years
+        return self._extract_years_from_date_ranges(text)
 
     def _infer_seniority(self, text: str, years: float) -> str:
         """Infer seniority from text and experience."""
         text_lower = text.lower()
 
-        # Check for explicit seniority keywords
-        for level, keywords in SENIORITY_KEYWORDS.items():
-            for keyword in keywords:
-                if keyword in text_lower:
+        # Prefer keywords in role/title lines to avoid false positives.
+        title_level = self._infer_seniority_from_titles(text_lower)
+        if title_level:
+            return title_level
+
+        # Check for explicit seniority keywords, highest precedence first.
+        for level in ["senior", "mid", "junior"]:
+            for keyword in SENIORITY_KEYWORDS[level]:
+                if re.search(rf"\b{re.escape(keyword)}\b", text_lower):
                     return level
 
         # Fallback to years-based inference
@@ -213,6 +259,168 @@ class ResumeParser:
             return "junior"
         else:
             return "unknown"
+
+    def _infer_seniority_from_titles(self, text: str) -> Optional[str]:
+        """Infer seniority from lines that look like role titles."""
+        title_lines = [
+            line for line in text.splitlines()
+            if any(hint in line for hint in ROLE_TITLE_HINTS)
+        ]
+        if not title_lines:
+            return None
+
+        found_levels = set()
+        for line in title_lines:
+            for level in ["senior", "mid", "junior"]:
+                keywords = SENIORITY_KEYWORDS[level]
+                pattern = r"\b(" + "|".join(re.escape(k) for k in keywords) + r")\b"
+                if re.search(pattern, line):
+                    found_levels.add(level)
+
+        if "senior" in found_levels:
+            return "senior"
+        if "mid" in found_levels:
+            return "mid"
+        if "junior" in found_levels:
+            return "junior"
+        return None
+
+    def _extract_years_from_date_ranges(self, text: str) -> float:
+        """Infer years of experience from date ranges in work history."""
+        section_text = self._extract_experience_section(text)
+        ranges = self._find_date_ranges(section_text)
+        if not ranges and section_text != text:
+            ranges = self._find_date_ranges(text)
+
+        total_months = self._merge_month_ranges(ranges)
+        if total_months <= 0:
+            return 0.0
+        return round(total_months / 12.0, 1)
+
+    def _extract_experience_section(self, text: str) -> str:
+        """Best-effort slice of the experience section."""
+        section_start = re.search(
+            r"\b(experience|work experience|professional experience|employment|work history)\b",
+            text,
+            re.IGNORECASE,
+        )
+        if not section_start:
+            return text
+
+        start_index = section_start.start()
+        section_text = text[start_index:]
+
+        section_end = re.search(
+            r"\b(education|skills|projects|certifications|summary|profile|awards|publications|volunteer|interests)\b",
+            section_text,
+            re.IGNORECASE,
+        )
+        if section_end:
+            return section_text[:section_end.start()]
+        return section_text
+
+    def _find_date_ranges(self, text: str) -> List[Tuple[int, int]]:
+        """Find date ranges and return month index intervals."""
+        date_token = (
+            r"(?:[A-Za-z]{3,9}\s+\d{4}"
+            r"|\d{4}[/-]\d{1,2}"
+            r"|\d{1,2}[/-]\d{4}"
+            r"|\d{4})"
+        )
+        dash_pattern = "-|\u2013|\u2014|to|through|until"
+        range_pattern = re.compile(
+            rf"(?P<start>{date_token})\s*(?:{dash_pattern})\s*"
+            rf"(?P<end>{date_token}|present|current|now)",
+            re.IGNORECASE,
+        )
+
+        now = datetime.utcnow()
+        now_index = now.year * 12 + (now.month - 1)
+        ranges = []
+        for match in range_pattern.finditer(text):
+            start_token = match.group("start")
+            end_token = match.group("end")
+
+            start = self._parse_date_token(start_token, is_end=False)
+            if not start:
+                continue
+            if end_token.lower() in {"present", "current", "now"}:
+                end_index = now_index
+            else:
+                end = self._parse_date_token(end_token, is_end=True)
+                if not end:
+                    continue
+                end_index = end[0] * 12 + (end[1] - 1)
+
+            start_index = start[0] * 12 + (start[1] - 1)
+            if start_index > end_index:
+                continue
+            ranges.append((start_index, end_index))
+
+        return ranges
+
+    def _parse_date_token(self, token: str, is_end: bool) -> Optional[Tuple[int, int]]:
+        """Parse a date token into (year, month)."""
+        cleaned = re.sub(r"[.,]", "", token.strip().lower())
+
+        # Month name + year
+        match = re.match(r"([a-z]{3,9})\s+(\d{4})$", cleaned)
+        if match:
+            month_name = match.group(1)
+            year = int(match.group(2))
+            month = MONTHS.get(month_name)
+            if month and self._is_valid_year(year):
+                return year, month
+
+        # MM/YYYY
+        match = re.match(r"(\d{1,2})[/-](\d{4})$", cleaned)
+        if match:
+            month = int(match.group(1))
+            year = int(match.group(2))
+            if 1 <= month <= 12 and self._is_valid_year(year):
+                return year, month
+
+        # YYYY/MM
+        match = re.match(r"(\d{4})[/-](\d{1,2})$", cleaned)
+        if match:
+            year = int(match.group(1))
+            month = int(match.group(2))
+            if 1 <= month <= 12 and self._is_valid_year(year):
+                return year, month
+
+        # Year only
+        match = re.match(r"(\d{4})$", cleaned)
+        if match:
+            year = int(match.group(1))
+            if self._is_valid_year(year):
+                month = 12 if is_end else 1
+                return year, month
+
+        return None
+
+    def _is_valid_year(self, year: int) -> bool:
+        """Check if year is in a plausible range."""
+        current_year = datetime.utcnow().year
+        return 1970 <= year <= current_year + 1
+
+    def _merge_month_ranges(self, ranges: List[Tuple[int, int]]) -> int:
+        """Merge overlapping month ranges and return total months."""
+        if not ranges:
+            return 0
+
+        ranges.sort()
+        merged = [ranges[0]]
+        for start, end in ranges[1:]:
+            last_start, last_end = merged[-1]
+            if start <= last_end + 1:
+                merged[-1] = (last_start, max(last_end, end))
+            else:
+                merged.append((start, end))
+
+        total_months = 0
+        for start, end in merged:
+            total_months += end - start + 1
+        return total_months
 
     def _extract_role_keywords(self, text: str) -> List[str]:
         """Extract role/title keywords from resume."""
