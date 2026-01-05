@@ -50,14 +50,81 @@ storage = Storage()
 
 
 # Helper functions
+def create_config_from_env():
+    """
+    Create JobScoutConfig from environment variables.
+
+    This allows configuration without committing config.yaml.
+    Falls back to loading from config.yaml if env vars not set.
+    """
+    import yaml
+    from jobscout.config import EmailConfig, ScheduleConfig, JobPreferences
+
+    # Check if we should use env vars
+    use_env = os.getenv("USE_ENV_CONFIG", "false").lower() == "true"
+
+    if use_env:
+        # Build config from environment variables
+        email = EmailConfig(
+            enabled=os.getenv("EMAIL_ENABLED", "true").lower() == "true",
+            to_address=os.getenv("SMTP_TO", ""),
+            smtp_host=os.getenv("SMTP_HOST"),
+            smtp_port=int(os.getenv("SMTP_PORT", "587")),
+            smtp_username=os.getenv("SMTP_USER"),
+            smtp_password=os.getenv("SMTP_PASS"),
+            smtp_from=os.getenv("SMTP_FROM", f"JobScout <{os.getenv('SMTP_TO', 'noreply@example.com')}>")
+        )
+
+        schedule = ScheduleConfig(
+            enabled=os.getenv("SCHEDULE_ENABLED", "false").lower() == "true",
+            frequency=os.getenv("SCHEDULE_FREQUENCY", "weekdays"),
+            time=os.getenv("SCHEDULE_TIME", "09:00"),
+            timezone=os.getenv("SCHEDULE_TIMEZONE", "America/New_York")
+        )
+
+        job_prefs = JobPreferences(
+            preferred_tech_stack=os.getenv("PREFERRED_TECH_STACK", "").split(",") if os.getenv("PREFERRED_TECH_STACK") else [],
+            location_preference=os.getenv("LOCATION_PREFERENCE", "remote"),
+            job_boards=[],  # Will use defaults if empty
+            max_job_age_days=int(os.getenv("MAX_JOB_AGE_DAYS", "7"))
+        )
+
+        config = JobScoutConfig(
+            resume_path="",  # Will be set after upload
+            email=email,
+            schedule=schedule,
+            job_preferences=job_prefs,
+            outbox_dir=os.getenv("OUTBOX_DIR", "./outbox"),
+            log_level=os.getenv("LOG_LEVEL", "INFO"),
+            min_score_threshold=float(os.getenv("MIN_SCORE_THRESHOLD", "65.0")),
+            fallback_min_score=float(os.getenv("NO_MUST_HAVE_MIN_SCORE", "75.0"))
+        )
+
+        return config
+
+    else:
+        # Load from config.yaml
+        config_yaml = storage.load_config()
+        if not config_yaml:
+            raise ValueError("No configuration found. Set USE_ENV_CONFIG=true or provide config.yaml")
+
+        return load_config_from_yaml(config_yaml)
+
+
 def get_or_create_config() -> JobScoutConfig:
-    """Load config or create from example."""
+    """Load config from env vars or config.yaml."""
+    use_env = os.getenv("USE_ENV_CONFIG", "false").lower() == "true"
+
+    if use_env:
+        return create_config_from_env()
+
+    # Load from config.yaml
     config_yaml = storage.load_config()
 
     if not config_yaml:
         raise HTTPException(
             status_code=404,
-            detail="No configuration found. Please create a config.yaml file."
+            detail="No configuration found. Set USE_ENV_CONFIG=true or create config.yaml"
         )
 
     try:
@@ -256,16 +323,8 @@ async def run_search(background_tasks: BackgroundTasks):
                 detail="No resume uploaded. Please upload a resume first."
             )
 
-        # Load config
-        config_yaml = storage.load_config()
-
-        if not config_yaml:
-            raise HTTPException(
-                status_code=404,
-                detail="No configuration found. Please configure JobScout first."
-            )
-
-        config = load_config_from_yaml(config_yaml)
+        # Load config (from env vars or config.yaml)
+        config = get_or_create_config()
 
         # Override resume path to use latest uploaded
         config.resume_path = resume_path
@@ -422,9 +481,8 @@ async def send_digest(request: SendDigestRequest):
                 detail=f"No jobs found in run {run_id}"
             )
 
-        # Load config
-        config_yaml = storage.load_config()
-        config = load_config_from_yaml(config_yaml)
+        # Load config (from env vars or config.yaml)
+        config = get_or_create_config()
 
         # Check if outbox mode
         outbox_mode = os.getenv("OUTBOX_MODE", "false").lower() == "true"
@@ -474,16 +532,8 @@ async def send_test_email():
         from email.mime.text import MIMEText
         from email.mime.multipart import MIMEMultipart
 
-        # Load config
-        config_yaml = storage.load_config()
-
-        if not config_yaml:
-            raise HTTPException(
-                status_code=404,
-                detail="No configuration found"
-            )
-
-        config = load_config_from_yaml(config_yaml)
+        # Load config (from env vars or config.yaml)
+        config = get_or_create_config()
 
         # Check SMTP configuration
         if not all([

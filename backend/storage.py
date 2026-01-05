@@ -16,19 +16,19 @@ class Storage:
         """Initialize storage with base directory."""
         if base_dir is None:
             # Use environment variable or default to local directory
-            base_dir = os.getenv("JOBSCOUT_DATA_DIR", "./data")
+            base_dir = os.getenv("JOBSCOUT_DATA_DIR", os.getenv("DATA_DIR", "./data"))
 
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create subdirectories
-        self.resumes_dir = self.base_dir / "resumes"
-        self.runs_dir = self.base_dir / "runs"
-        self.digests_dir = self.base_dir / "digests"
-        self.outbox_dir = self.base_dir / "outbox"
+        # Create subdirectories (allow override via env vars)
+        self.resumes_dir = Path(os.getenv("RESUMES_DIR", str(self.base_dir / "resumes")))
+        self.runs_dir = Path(os.getenv("RUNS_DIR", str(self.base_dir / "runs")))
+        self.digests_dir = Path(os.getenv("DIGESTS_DIR", str(self.base_dir / "digests")))
+        self.outbox_dir = Path(os.getenv("OUTBOX_DIR", str(self.base_dir / "outbox")))
 
         for dir_path in [self.resumes_dir, self.runs_dir, self.digests_dir, self.outbox_dir]:
-            dir_path.mkdir(exist_ok=True)
+            dir_path.mkdir(parents=True, exist_ok=True)
 
     def get_config_path(self) -> Path:
         """Get path to config.yaml."""
