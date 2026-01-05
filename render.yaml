@@ -11,6 +11,8 @@ services:
         value: https://jobscoutpro.netlify.app,http://localhost:5173
       - key: OUTBOX_MODE
         value: false
+      - key: JOBSCOUT_DATA_DIR
+        value: /var/data
       - key: PYTHON_VERSION
         value: 3.12.5
     disk:
