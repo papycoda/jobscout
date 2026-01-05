@@ -134,6 +134,15 @@ class Storage:
         meta_path = run_dir / "run_meta.json"
         meta_path.write_text(json.dumps(meta, indent=2, default=str))
 
+    def load_run_meta(self, run_id: str) -> Optional[Dict]:
+        """Load run metadata by run ID."""
+        meta_path = self.runs_dir / run_id / "run_meta.json"
+
+        if not meta_path.exists():
+            return None
+
+        return json.loads(meta_path.read_text())
+
     def load_run_jobs(self, run_id: str) -> Optional[List[Dict]]:
         """Load jobs from a run."""
         jobs_path = self.runs_dir / run_id / "jobs.json"

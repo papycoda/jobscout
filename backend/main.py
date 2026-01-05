@@ -204,6 +204,34 @@ JobScoutConfig.from_yaml_str = classmethod(_from_yaml_str)
 
 # Endpoints
 
+@app.get("/health")
+async def health_check_render():
+    """Health check endpoint for Render (no /api prefix)."""
+    return {"ok": True}
+
+@app.get("/debug")
+async def debug_info():
+    """Debug endpoint to check disk configuration."""
+    import os
+    from pathlib import Path
+
+    data_dir = os.getenv("DATA_DIR", "/var/data")
+
+    return {
+        "data_dir_env": data_dir,
+        "data_dir_exists": os.path.exists(data_dir),
+        "data_dir_isdir": os.path.isdir(data_dir) if os.path.exists(data_dir) else False,
+        "data_dir_writable": os.access(data_dir, os.W_OK) if os.path.exists(data_dir) else False,
+        "cwd": os.getcwd(),
+        "uid": os.getuid(),
+        "gid": os.getgid(),
+        "env_vars": {
+            "DATA_DIR": os.getenv("DATA_DIR"),
+            "RESUMES_DIR": os.getenv("RESUMES_DIR"),
+            "JOBSCOUT_DATA_DIR": os.getenv("JOBSCOUT_DATA_DIR"),
+        }
+    }
+
 @app.get("/api/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint."""
@@ -306,13 +334,31 @@ async def update_config(request: ConfigUpdateRequest):
 
 
 @app.post("/api/search", response_model=SearchResponse)
-async def run_search(background_tasks: BackgroundTasks):
+async def run_search():
     """
     Run a job search.
 
     Creates a new run, fetches and scores jobs, and saves results.
     Returns run_id for polling.
     """
+    run_id, run_dir = storage.create_run_dir()
+
+    # Write initial run metadata immediately
+    from datetime import datetime
+    storage.save_run_meta(run_dir, {
+        "run_id": run_id,
+        "status": "running",
+        "phase": "starting",
+        "message": "Initializing job search",
+        "started_at": datetime.now().isoformat(),
+        "finished_at": None,
+        "error": None
+    })
+
+    # Run in background would be ideal, but for simplicity we'll run synchronously
+    # In production, you'd want to use Celery or similar for true async
+    logger.info(f"Starting JobScout run {run_id}")
+
     try:
         # Check for resume
         resume_path = storage.get_latest_resume_path()
@@ -329,48 +375,99 @@ async def run_search(background_tasks: BackgroundTasks):
         # Override resume path to use latest uploaded
         config.resume_path = resume_path
 
-        # Create run directory
-        run_id, run_dir = storage.create_run_dir()
+        # Update phase: fetching
+        storage.save_run_meta(run_dir, {
+            "run_id": run_id,
+            "status": "running",
+            "phase": "fetching",
+            "message": "Fetching jobs from sources",
+            "started_at": datetime.now().isoformat(),
+            "finished_at": None,
+            "error": None
+        })
 
-        # Run search in background would be ideal, but for simplicity we'll run synchronously
-        # In production, you'd want to use Celery or similar for true async
-        logger.info(f"Starting JobScout run {run_id}")
+        # Run JobScout via adapter
+        adapter = JobScoutAdapter(config)
+        results = adapter.run_and_capture()
 
-        try:
-            # Run JobScout via adapter
-            adapter = JobScoutAdapter(config)
-            results = adapter.run_and_capture()
+        # Update phase: completing
+        storage.save_run_meta(run_dir, {
+            "run_id": run_id,
+            "status": "completed",
+            "phase": "done",
+            "message": f"Completed with {len(results['jobs'])} matching jobs",
+            "started_at": results["metadata"]["start_time"],
+            "finished_at": results["metadata"]["end_time"],
+            "error": None,
+            **{k: v for k, v in results["metadata"].items() if k not in ["start_time", "end_time"]}
+        })
 
-            # Save results
-            storage.save_run_jobs(run_dir, results["jobs"])
-            storage.save_run_filtered_jobs(run_dir, results["filtered_jobs"])
-            storage.save_run_meta(run_dir, results["metadata"])
+        # Save results
+        storage.save_run_jobs(run_dir, results["jobs"])
+        storage.save_run_filtered_jobs(run_dir, results["filtered_jobs"])
 
-            logger.info(f"JobScout run {run_id} completed: {len(results['jobs'])} matching jobs")
+        logger.info(f"JobScout run {run_id} completed: {len(results['jobs'])} matching jobs")
 
-            return SearchResponse(run_id=run_id)
+        return SearchResponse(run_id=run_id)
 
-        except Exception as e:
-            logger.error(f"JobScout run {run_id} failed: {e}", exc_info=True)
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        logger.error(f"JobScout run {run_id} failed: {e}", exc_info=True)
 
-            # Save error metadata
-            storage.save_run_meta(run_dir, {
-                "status": "error",
-                "error": str(e)
-            })
+        # Save error metadata
+        storage.save_run_meta(run_dir, {
+            "run_id": run_id,
+            "status": "failed",
+            "phase": "error",
+            "message": "Search failed",
+            "started_at": datetime.now().isoformat(),
+            "finished_at": datetime.now().isoformat(),
+            "error": str(e)
+        })
 
+        raise HTTPException(
+            status_code=500,
+            detail=f"Job search failed: {str(e)}"
+        )
+
+
+@app.get("/api/runs/{run_id}")
+async def get_run_status(run_id: str):
+    """
+    Get run status for frontend polling.
+
+    Returns the current status, phase, and progress message for a run.
+    """
+    try:
+        # Check if run exists
+        run_dir = storage.get_run_dir(run_id)
+
+        if not run_dir:
             raise HTTPException(
-                status_code=500,
-                detail=f"Job search failed: {str(e)}"
+                status_code=404,
+                detail=f"Run {run_id} not found"
             )
+
+        # Load run metadata
+        metadata = storage.load_run_meta(run_id)
+
+        if not metadata:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Run metadata not found for {run_id}"
+            )
+
+        return metadata
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Search failed: {e}", exc_info=True)
+        logger.error(f"Failed to load run status: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to run search: {str(e)}"
+            detail=f"Failed to load run status: {str(e)}"
         )
 
 
