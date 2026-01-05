@@ -1,0 +1,57 @@
+# JobScout Configuration Example
+# Copy this file to config.yaml and customize with your details
+
+# REQUIRED: Path to your resume (PDF, DOCX, or TXT)
+resume_path: "./resume.pdf"
+
+# Email delivery settings
+email:
+  enabled: true
+  to_address: "your-email@example.com"
+
+  # Optional SMTP configuration
+  # If not provided, emails will be written to ./outbox directory
+  # smtp_host: "smtp.gmail.com"
+  # smtp_port: 587
+  # smtp_username: "your-email@example.com"
+  # smtp_password: "your-app-password"
+  # smtp_from: "JobScout <noreply@jobscout.example.com>"
+
+# Scheduling preferences
+schedule:
+  enabled: true
+  frequency: "daily"  # "daily" or "weekdays"
+  time: "09:00"  # 24-hour format (HH:MM)
+  timezone: "America/New_York"  # IANA timezone name
+
+# Job search preferences
+job_preferences:
+  # Optional: Specify preferred tech stack (lower weight than resume skills)
+  # preferred_tech_stack:
+  #   - "rust"
+  #   - "graphql"
+
+  location_preference: "remote"  # "remote", "hybrid", "onsite", or "any"
+
+  # Optional: Specify which job boards to use
+  # If empty, uses all defaults (RemoteOK, We Work Remotely, Remotive, Greenhouse, Lever)
+  # job_boards:
+  #   - "remoteok"
+  #   - "remotive"
+  #   - "greenhouse"
+
+  # Maximum age of job postings in days
+  max_job_age_days: 7
+
+# Optional: OpenAI API key for enhanced parsing (not required for MVP)
+# openai_api_key: "sk-..."
+
+# Output directory for emails when SMTP is not configured
+outbox_dir: "./outbox"
+
+# Logging level: DEBUG, INFO, WARNING, ERROR
+log_level: "INFO"
+
+# Scoring thresholds (don't change unless you understand the implications)
+min_score_threshold: 65.0  # Jobs below this score are excluded
+fallback_min_score: 75.0  # Used when job must-have list is empty

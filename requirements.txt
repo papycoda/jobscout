@@ -1,0 +1,23 @@
+# Core dependencies
+feedparser>=6.0.10
+requests>=2.31.0
+python-dateutil>=2.8.2
+pytz>=2024.1
+
+# Resume parsing
+pdfplumber>=0.11.0
+python-docx>=1.1.0
+
+# Scheduling
+apscheduler>=3.10.4
+
+# Configuration
+pyyaml>=6.0.1
+
+# HTML parsing for job pages
+beautifulsoup4>=4.12.3
+lxml>=5.1.0
+
+# Testing (optional for production, required for dev)
+pytest>=8.0.0
+pytest-cov>=4.1.0

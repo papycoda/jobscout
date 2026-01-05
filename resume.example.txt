@@ -1,0 +1,40 @@
+John Doe
+Senior Backend Engineer
+San Francisco, CA
+john.doe@example.com
+
+SUMMARY
+Senior backend engineer with 8 years of experience building scalable web applications
+and APIs. Expertise in Python, Django, FastAPI, and cloud infrastructure.
+
+EXPERIENCE
+
+Senior Backend Engineer | TechCorp Inc. | 2020 - Present
+- Designed and implemented microservices architecture using Python and FastAPI
+- Built RESTful APIs serving 1M+ daily requests with 99.9% uptime
+- Managed PostgreSQL databases with 10TB+ data
+- Deployed services using Docker and Kubernetes on AWS
+- Implemented CI/CD pipelines using GitHub Actions
+
+Backend Engineer | StartupCo | 2017 - 2020
+- Developed Django web applications with PostgreSQL and Redis
+- Built real-time notification system using Kafka
+- Automated deployments with Docker and Ansible
+- Reduced API response time by 60% through optimization
+
+Junior Developer | WebAgency | 2015 - 2017
+- Developed full-stack web applications using Django and JavaScript
+- Wrote unit tests using pytest
+- Participated in code reviews and agile development
+
+SKILLS
+- Languages: Python, JavaScript, TypeScript, Go
+- Frameworks: Django, FastAPI, Flask, Express
+- Databases: PostgreSQL, MySQL, Redis, MongoDB
+- Infrastructure: Docker, Kubernetes, AWS, Terraform
+- Messaging: Kafka, RabbitMQ, SQS
+- Testing: pytest, unittest, Jest
+- CI/CD: GitHub Actions, GitLab CI, Jenkins
+
+EDUCATION
+Bachelor of Science in Computer Science | University of California | 2015
