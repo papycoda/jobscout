@@ -19,7 +19,7 @@ class Storage:
             base_dir = os.getenv("JOBSCOUT_DATA_DIR", os.getenv("DATA_DIR", "./data"))
 
         self.base_dir = Path(base_dir)
-        self.base_dir.mkdir(parents=True, exist_ok=True)
+        self._base_dir_initialized = False
 
         # Create subdirectories (allow override via env vars)
         self.resumes_dir = Path(os.getenv("RESUMES_DIR", str(self.base_dir / "resumes")))
@@ -27,8 +27,20 @@ class Storage:
         self.digests_dir = Path(os.getenv("DIGESTS_DIR", str(self.base_dir / "digests")))
         self.outbox_dir = Path(os.getenv("OUTBOX_DIR", str(self.base_dir / "outbox")))
 
-        for dir_path in [self.resumes_dir, self.runs_dir, self.digests_dir, self.outbox_dir]:
-            dir_path.mkdir(parents=True, exist_ok=True)
+    def _ensure_directories(self):
+        """Ensure all directories exist (lazy initialization)."""
+        if not self._base_dir_initialized:
+            try:
+                self.base_dir.mkdir(parents=True, exist_ok=True)
+
+                # Create subdirectories
+                for dir_path in [self.resumes_dir, self.runs_dir, self.digests_dir, self.outbox_dir]:
+                    dir_path.mkdir(parents=True, exist_ok=True)
+
+                self._base_dir_initialized = True
+            except PermissionError as e:
+                logger.error(f"Permission denied creating {self.base_dir}. Render disk must be mounted first.")
+                raise
 
     def get_config_path(self) -> Path:
         """Get path to config.yaml."""
@@ -56,6 +68,7 @@ class Storage:
 
     def save_config(self, config_yaml: str) -> None:
         """Save config YAML content."""
+        self._ensure_directories()
         config_path = self.get_config_path()
         config_path.write_text(config_yaml)
 
@@ -65,6 +78,8 @@ class Storage:
 
         Returns: Path to saved resume
         """
+        self._ensure_directories()
+
         # Generate unique filename
         unique_id = uuid.uuid4().hex[:8]
         safe_filename = f"{unique_id}-{filename}"
@@ -94,6 +109,8 @@ class Storage:
 
         Returns: (run_id, run_dir_path)
         """
+        self._ensure_directories()
+
         run_id = uuid.uuid4().hex
         run_dir = self.runs_dir / run_id
         run_dir.mkdir(exist_ok=True)
@@ -144,6 +161,8 @@ class Storage:
 
     def save_digest(self, digest_id: str, html: str, subject: str, meta: Dict) -> None:
         """Save email digest."""
+        self._ensure_directories()
+
         # Save HTML
         digest_path = self.digests_dir / f"{digest_id}.html"
         digest_path.write_text(html)
