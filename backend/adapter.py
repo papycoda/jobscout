@@ -111,7 +111,7 @@ class JobScoutAdapter:
                 "start_time": start_time.isoformat(),
                 "end_time": end_time.isoformat(),
                 "duration_seconds": (end_time - start_time).total_seconds(),
-                "status": "success",
+                "status": "completed",
                 "total_fetched": len(jobs),
                 "total_parsed": len(parsed_jobs),
                 "hard_filtered": len(hard_filtered_jobs),
@@ -154,7 +154,7 @@ class JobScoutAdapter:
                 "start_time": start_time.isoformat(),
                 "end_time": end_time.isoformat(),
                 "duration_seconds": (end_time - start_time).total_seconds(),
-                "status": "success",
+                "status": "completed",
                 "matching": 0
             }
         }
