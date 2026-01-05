@@ -3,10 +3,12 @@
 import os
 import json
 import uuid
+import logging
 from pathlib import Path
-from datetime import datetime
-from typing import List, Optional, Dict, Any
-import yaml
+from typing import List, Optional, Dict
+
+
+logger = logging.getLogger(__name__)
 
 
 class Storage:
@@ -38,7 +40,7 @@ class Storage:
                     dir_path.mkdir(parents=True, exist_ok=True)
 
                 self._base_dir_initialized = True
-            except PermissionError as e:
+            except PermissionError:
                 logger.error(f"Permission denied creating {self.base_dir}. Render disk must be mounted first.")
                 raise
 
