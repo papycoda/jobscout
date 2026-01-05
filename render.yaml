@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: jobscout-api
+    runtime: python
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: CORS_ORIGINS
+        value: https://jobscoutpro.netlify.app,http://localhost:5173
+      - key: OUTBOX_MODE
+        value: false
+      - key: PYTHON_VERSION
+        value: 3.12.5
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1

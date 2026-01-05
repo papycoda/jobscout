@@ -1,0 +1,15 @@
+# FastAPI and server
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+
+feedparser>=6.0.10
+requests>=2.31.0
+python-dateutil>=2.8.2
+pytz>=2024.1
+pdfplumber>=0.11.0
+python-docx>=1.1.0
+apscheduler>=3.10.4
+pyyaml>=6.0.1
+beautifulsoup4>=4.12.3
+lxml>=5.1.0

@@ -1,0 +1,580 @@
+"""FastAPI backend for JobScout."""
+
+import os
+import sys
+import logging
+from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException, UploadFile, File, Query, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+# Add parent directory to path to import jobscout
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from jobscout.config import JobScoutConfig
+from backend.storage import Storage
+from backend.adapter import JobScoutAdapter
+from backend.models import *
+
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+# Initialize FastAPI
+app = FastAPI(
+    title="JobScout API",
+    description="Conservative job search assistant backend"
+)
+
+
+# CORS configuration
+cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,https://jobscoutpro.netlify.app").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# Initialize storage
+storage = Storage()
+
+
+# Helper functions
+def get_or_create_config() -> JobScoutConfig:
+    """Load config or create from example."""
+    config_yaml = storage.load_config()
+
+    if not config_yaml:
+        raise HTTPException(
+            status_code=404,
+            detail="No configuration found. Please create a config.yaml file."
+        )
+
+    try:
+        config = JobScoutConfig.from_yaml_str(config_yaml)
+        errors = config.validate()
+
+        if errors:
+            logger.warning(f"Config validation errors: {errors}")
+
+        return config
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid configuration: {str(e)}"
+        )
+
+
+def load_config_from_yaml(config_yaml: str) -> JobScoutConfig:
+    """Load config from YAML string."""
+    try:
+        # Use a temporary method to load from string
+        import yaml
+        from jobscout.config import EmailConfig, ScheduleConfig, JobPreferences
+
+        data = yaml.safe_load(config_yaml)
+
+        # Convert nested dicts
+        email_data = data.pop("email", {})
+        schedule_data = data.pop("schedule", {})
+        job_prefs_data = data.pop("job_preferences", {})
+
+        email = EmailConfig(**email_data)
+        schedule = ScheduleConfig(**schedule_data)
+        job_prefs = JobPreferences(**job_prefs_data)
+
+        config = JobScoutConfig(
+            email=email,
+            schedule=schedule,
+            job_preferences=job_prefs,
+            **data
+        )
+
+        return config
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to parse configuration: {str(e)}"
+        )
+
+
+# Add from_yaml_str classmethod to JobScoutConfig
+def _from_yaml_str(cls, yaml_str: str):
+    """Load config from YAML string."""
+    import yaml
+    from jobscout.config import EmailConfig, ScheduleConfig, JobPreferences
+
+    data = yaml.safe_load(yaml_str)
+
+    email_data = data.pop("email", {})
+    schedule_data = data.pop("schedule", {})
+    job_prefs_data = data.pop("job_preferences", {})
+
+    email = EmailConfig(**email_data)
+    schedule = ScheduleConfig(**schedule_data)
+    job_prefs = JobPreferences(**job_prefs_data)
+
+    return cls(
+        email=email,
+        schedule=schedule,
+        job_preferences=job_prefs,
+        **data
+    )
+
+
+JobScoutConfig.from_yaml_str = classmethod(_from_yaml_str)
+
+
+# Endpoints
+
+@app.get("/api/health", response_model=HealthResponse)
+async def health_check():
+    """Health check endpoint."""
+    return {"ok": True}
+
+
+@app.post("/api/upload-resume", response_model=ResumeUploadResponse)
+async def upload_resume(file: UploadFile = File(...)):
+    """
+    Upload a resume file.
+
+    Saves the resume and extracts skills/metadata.
+    """
+    try:
+        # Validate file type
+        allowed_extensions = {".pdf", ".docx", ".txt"}
+        file_ext = Path(file.filename).suffix.lower()
+
+        if file_ext not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
+            )
+
+        # Read file content
+        content = await file.read()
+
+        # Save to storage
+        resume_path = storage.save_resume(file.filename, content)
+
+        # Parse resume
+        from jobscout.resume_parser import ResumeParser
+        parser = ResumeParser()
+        parsed = parser.parse(resume_path)
+
+        # Extract metadata
+        metadata = {
+            "seniority": parsed.seniority,
+            "years_experience": parsed.years_experience,
+            "role_keywords": parsed.role_keywords,
+            "skills_count": len(parsed.skills)
+        }
+
+        return ResumeUploadResponse(
+            resume_path=resume_path,
+            skills=sorted(parsed.skills),
+            metadata=metadata
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Resume upload failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to upload resume: {str(e)}"
+        )
+
+
+@app.get("/api/config", response_model=ConfigResponse)
+async def get_config():
+    """Get current configuration."""
+    try:
+        config_yaml = storage.load_config()
+
+        if not config_yaml:
+            # Return empty config if none exists
+            return ConfigResponse(config_yaml="")
+
+        return ConfigResponse(config_yaml=config_yaml)
+
+    except Exception as e:
+        logger.error(f"Failed to load config: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load configuration: {str(e)}"
+        )
+
+
+@app.put("/api/config")
+async def update_config(request: ConfigUpdateRequest):
+    """Update configuration."""
+    try:
+        # Validate YAML syntax
+        config = load_config_from_yaml(request.config_yaml)
+
+        # Save to storage
+        storage.save_config(request.config_yaml)
+
+        return {"ok": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to save config: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save configuration: {str(e)}"
+        )
+
+
+@app.post("/api/search", response_model=SearchResponse)
+async def run_search(background_tasks: BackgroundTasks):
+    """
+    Run a job search.
+
+    Creates a new run, fetches and scores jobs, and saves results.
+    Returns run_id for polling.
+    """
+    try:
+        # Check for resume
+        resume_path = storage.get_latest_resume_path()
+
+        if not resume_path:
+            raise HTTPException(
+                status_code=400,
+                detail="No resume uploaded. Please upload a resume first."
+            )
+
+        # Load config
+        config_yaml = storage.load_config()
+
+        if not config_yaml:
+            raise HTTPException(
+                status_code=404,
+                detail="No configuration found. Please configure JobScout first."
+            )
+
+        config = load_config_from_yaml(config_yaml)
+
+        # Override resume path to use latest uploaded
+        config.resume_path = resume_path
+
+        # Create run directory
+        run_id, run_dir = storage.create_run_dir()
+
+        # Run search in background would be ideal, but for simplicity we'll run synchronously
+        # In production, you'd want to use Celery or similar for true async
+        logger.info(f"Starting JobScout run {run_id}")
+
+        try:
+            # Run JobScout via adapter
+            adapter = JobScoutAdapter(config)
+            results = adapter.run_and_capture()
+
+            # Save results
+            storage.save_run_jobs(run_dir, results["jobs"])
+            storage.save_run_filtered_jobs(run_dir, results["filtered_jobs"])
+            storage.save_run_meta(run_dir, results["metadata"])
+
+            logger.info(f"JobScout run {run_id} completed: {len(results['jobs'])} matching jobs")
+
+            return SearchResponse(run_id=run_id)
+
+        except Exception as e:
+            logger.error(f"JobScout run {run_id} failed: {e}", exc_info=True)
+
+            # Save error metadata
+            storage.save_run_meta(run_dir, {
+                "status": "error",
+                "error": str(e)
+            })
+
+            raise HTTPException(
+                status_code=500,
+                detail=f"Job search failed: {str(e)}"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Search failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to run search: {str(e)}"
+        )
+
+
+@app.get("/api/jobs", response_model=JobsListResponse)
+async def get_jobs(run_id: str = Query(..., description="Run ID from /api/search")):
+    """Get matching jobs from a run."""
+    try:
+        jobs = storage.load_run_jobs(run_id)
+
+        if jobs is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Run {run_id} not found"
+            )
+
+        return JobsListResponse(jobs=jobs)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to load jobs: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load jobs: {str(e)}"
+        )
+
+
+@app.get("/api/jobs/{job_id}", response_model=JobDetails)
+async def get_job_details(job_id: str, run_id: str = Query(..., description="Run ID from /api/search")):
+    """Get details for a specific job."""
+    try:
+        jobs = storage.load_run_jobs(run_id)
+
+        if jobs is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Run {run_id} not found"
+            )
+
+        # Find job by ID
+        job = next((j for j in jobs if j["id"] == job_id), None)
+
+        if not job:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Job {job_id} not found in run {run_id}"
+            )
+
+        return JobDetails(**job)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to load job details: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load job details: {str(e)}"
+        )
+
+
+@app.get("/api/filtered-jobs", response_model=FilteredJobsListResponse)
+async def get_filtered_jobs(run_id: str = Query(..., description="Run ID from /api/search")):
+    """Get filtered-out jobs from a run."""
+    try:
+        filtered_jobs = storage.load_run_filtered_jobs(run_id)
+
+        if filtered_jobs is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Run {run_id} not found"
+            )
+
+        return FilteredJobsListResponse(filtered_jobs=filtered_jobs)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to load filtered jobs: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load filtered jobs: {str(e)}"
+        )
+
+
+@app.post("/api/send-digest", response_model=SendDigestResponse)
+async def send_digest(request: SendDigestRequest):
+    """
+    Generate and send email digest.
+
+    Uses the most recent run if run_id is not provided.
+    """
+    try:
+        # Determine which run to use
+        run_id = request.run_id or storage.get_latest_run_id()
+
+        if not run_id:
+            raise HTTPException(
+                status_code=404,
+                detail="No runs found. Please run a search first."
+            )
+
+        # Load jobs
+        jobs = storage.load_run_jobs(run_id)
+
+        if not jobs:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No jobs found in run {run_id}"
+            )
+
+        # Load config
+        config_yaml = storage.load_config()
+        config = load_config_from_yaml(config_yaml)
+
+        # Check if outbox mode
+        outbox_mode = os.getenv("OUTBOX_MODE", "false").lower() == "true"
+
+        # Use adapter to send email
+        adapter = JobScoutAdapter(config)
+        result = adapter.send_email_digest(jobs, outbox_mode=outbox_mode)
+
+        # Save digest to storage
+        from datetime import datetime
+        digest_id = result["digest_id"]
+
+        # Generate HTML digest (simplified - reuse from adapter)
+        # For now, just save metadata
+        storage.save_digest(
+            digest_id=digest_id,
+            html=f"<html><body><h1>Digest {digest_id}</h1><p>{len(jobs)} jobs</p></body></html>",
+            subject=f"JobScout: {len(jobs)} apply-ready matches",
+            meta={
+                "created_at": datetime.now().isoformat(),
+                "mode": result["mode"],
+                "run_id": run_id,
+                "job_count": len(jobs)
+            }
+        )
+
+        return SendDigestResponse(
+            digest_id=digest_id,
+            mode=result["mode"]
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to send digest: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to send digest: {str(e)}"
+        )
+
+
+@app.post("/api/send-test-email", response_model=SendTestEmailResponse)
+async def send_test_email():
+    """Send a test email to verify SMTP configuration."""
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+
+        # Load config
+        config_yaml = storage.load_config()
+
+        if not config_yaml:
+            raise HTTPException(
+                status_code=404,
+                detail="No configuration found"
+            )
+
+        config = load_config_from_yaml(config_yaml)
+
+        # Check SMTP configuration
+        if not all([
+            config.email.smtp_host,
+            config.email.smtp_username,
+            config.email.smtp_password,
+            config.email.smtp_from,
+            config.email.to_address
+        ]):
+            raise HTTPException(
+                status_code=400,
+                detail="SMTP not configured. Please configure SMTP settings first."
+            )
+
+        # Send test email
+        msg = MIMEMultipart()
+        msg['Subject'] = "JobScout Test Email"
+        msg['From'] = config.email.smtp_from
+        msg['To'] = config.email.to_address
+
+        body = """
+        <html>
+        <body>
+            <h2>JobScout Test Email</h2>
+            <p>This is a test email from JobScout.</p>
+            <p>Your SMTP configuration is working correctly!</p>
+        </body>
+        </html>
+        """
+
+        msg.attach(MIMEText(body, 'html'))
+
+        with smtplib.SMTP(config.email.smtp_host, config.email.smtp_port) as server:
+            server.starttls()
+            server.login(config.email.smtp_username, config.email.smtp_password)
+            server.send_message(msg)
+
+        logger.info(f"Test email sent to {config.email.to_address}")
+
+        return SendTestEmailResponse(ok=True)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to send test email: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to send test email: {str(e)}"
+        )
+
+
+@app.get("/api/digests", response_model=DigestsListResponse)
+async def list_digests():
+    """List all email digests."""
+    try:
+        digests = storage.list_digests()
+        return DigestsListResponse(digests=digests)
+
+    except Exception as e:
+        logger.error(f"Failed to list digests: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list digests: {str(e)}"
+        )
+
+
+@app.get("/api/digests/{digest_id}", response_model=DigestResponse)
+async def get_digest(digest_id: str):
+    """Get a specific digest."""
+    try:
+        digest = storage.load_digest(digest_id)
+
+        if not digest:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Digest {digest_id} not found"
+            )
+
+        return DigestResponse(**digest)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to load digest: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load digest: {str(e)}"
+        )
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
