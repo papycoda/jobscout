@@ -27,6 +27,14 @@ class SearchResponse(BaseModel):
     run_id: str
 
 
+class RunStatusResponse(BaseModel):
+    run_id: str
+    status: str  # 'pending' | 'running' | 'completed' | 'failed'
+    message: Optional[str] = None
+    jobs_found: Optional[int] = None
+    jobs_matched: Optional[int] = None
+
+
 class JobBreakdown(BaseModel):
     must_have_coverage: float  # 0-1
     stack_overlap: float  # 0-1
