@@ -303,6 +303,27 @@ async def upload_resume(file: UploadFile = File(...)):
 async def get_config():
     """Get current configuration."""
     try:
+        if os.getenv("USE_ENV_CONFIG", "false").lower() == "true":
+            from dataclasses import asdict
+            import yaml
+
+            config = create_config_from_env()
+            config_data = asdict(config)
+            email_data = config_data.get("email", {})
+            if email_data.get("to_address"):
+                email_data["to_address"] = "******"
+            if email_data.get("smtp_username"):
+                email_data["smtp_username"] = "******"
+            if email_data.get("smtp_password"):
+                email_data["smtp_password"] = "******"
+            if email_data.get("smtp_from"):
+                email_data["smtp_from"] = "******"
+            if config_data.get("openai_api_key"):
+                config_data["openai_api_key"] = "******"
+
+            config_yaml = yaml.safe_dump(config_data, sort_keys=False)
+            return ConfigResponse(config_yaml=config_yaml)
+
         config_yaml = storage.load_config()
 
         if not config_yaml:
@@ -580,10 +601,29 @@ async def send_digest(request: SendDigestRequest):
         # Load jobs
         jobs = storage.load_run_jobs(run_id)
 
-        if not jobs:
+        if jobs is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"No jobs found in run {run_id}"
+                detail=f"Run {run_id} not found"
+            )
+
+        if not jobs:
+            from datetime import datetime
+            digest_id = f"empty_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            storage.save_digest(
+                digest_id=digest_id,
+                html=f"<html><body><h1>No matching jobs</h1><p>Run {run_id}</p></body></html>",
+                subject="JobScout: 0 apply-ready matches",
+                meta={
+                    "created_at": datetime.now().isoformat(),
+                    "mode": "noop",
+                    "run_id": run_id,
+                    "job_count": 0
+                }
+            )
+            return SendDigestResponse(
+                digest_id=digest_id,
+                mode="noop"
             )
 
         # Load config (from env vars or config.yaml)

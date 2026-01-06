@@ -88,7 +88,7 @@ class SendDigestRequest(BaseModel):
 
 class SendDigestResponse(BaseModel):
     digest_id: str
-    mode: str  # "smtp" or "outbox"
+    mode: str  # "smtp", "outbox", or "noop"
 
 
 class SendTestEmailResponse(BaseModel):
