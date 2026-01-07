@@ -267,13 +267,10 @@ async def upload_resume(file: UploadFile = File(...)):
         # Read file content
         content = await file.read()
 
-        # Save to storage
-        resume_path = storage.save_resume(file.filename, content)
-
         # Parse resume
         from jobscout.resume_parser import ResumeParser
         parser = ResumeParser()
-        parsed = parser.parse(resume_path)
+        parsed = parser.parse_bytes(file.filename, content)
 
         # Extract metadata
         metadata = {
@@ -283,8 +280,16 @@ async def upload_resume(file: UploadFile = File(...)):
             "skills_count": len(parsed.skills)
         }
 
+        storage.save_resume_profile({
+            "skills": sorted(parsed.skills),
+            "tools": sorted(parsed.tools),
+            "seniority": parsed.seniority,
+            "years_experience": parsed.years_experience,
+            "role_keywords": parsed.role_keywords
+        })
+
         return ResumeUploadResponse(
-            resume_path=resume_path,
+            resume_path="profile://latest",
             skills=sorted(parsed.skills),
             metadata=metadata
         )
@@ -391,8 +396,9 @@ async def run_search():
     try:
         # Check for resume
         resume_path = storage.get_latest_resume_path()
+        resume_profile = storage.load_latest_resume_profile()
 
-        if not resume_path:
+        if not resume_path and not resume_profile:
             raise HTTPException(
                 status_code=400,
                 detail="No resume uploaded. Please upload a resume first."
@@ -401,8 +407,8 @@ async def run_search():
         # Load config (from env vars or config.yaml)
         config = get_or_create_config()
 
-        # Override resume path to use latest uploaded
-        config.resume_path = resume_path
+        # Override resume path to use latest uploaded if present
+        config.resume_path = resume_path or ""
 
         # Update phase: fetching
         storage.save_run_meta(run_dir, {
@@ -416,7 +422,7 @@ async def run_search():
         })
 
         # Run JobScout via adapter
-        adapter = JobScoutAdapter(config)
+        adapter = JobScoutAdapter(config, resume_profile=resume_profile)
         results = adapter.run_and_capture()
 
         # Update phase: completing

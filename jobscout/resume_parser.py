@@ -1,6 +1,7 @@
 """Resume parsing and skill extraction."""
 
 import re
+import io
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -167,10 +168,35 @@ class ResumeParser:
 
         return self._extract_from_text(text)
 
+    def parse_bytes(self, filename: str, content: bytes) -> ParsedResume:
+        """Parse resume from bytes (PDF, DOCX, or TXT)."""
+        suffix = Path(filename).suffix.lower()
+
+        if suffix == '.pdf':
+            text = self._parse_pdf_bytes(content)
+        elif suffix == '.docx':
+            text = self._parse_docx_bytes(content)
+        elif suffix == '.txt':
+            text = self._parse_txt_bytes(content)
+        else:
+            raise ValueError(f"Unsupported file format: {suffix}")
+
+        return self._extract_from_text(text)
+
     def _parse_pdf(self, path: Path) -> str:
         """Extract text from PDF."""
         text_chunks = []
         with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text_chunks.append(page_text)
+        return "\n".join(text_chunks)
+
+    def _parse_pdf_bytes(self, content: bytes) -> str:
+        """Extract text from PDF bytes."""
+        text_chunks = []
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
             for page in pdf.pages:
                 page_text = page.extract_text()
                 if page_text:
@@ -183,9 +209,19 @@ class ResumeParser:
         paragraphs = [para.text for para in doc.paragraphs]
         return "\n".join(paragraphs)
 
+    def _parse_docx_bytes(self, content: bytes) -> str:
+        """Extract text from DOCX bytes."""
+        doc = docx.Document(io.BytesIO(content))
+        paragraphs = [para.text for para in doc.paragraphs]
+        return "\n".join(paragraphs)
+
     def _parse_txt(self, path: Path) -> str:
         """Extract text from TXT."""
         return path.read_text(encoding='utf-8', errors='ignore')
+
+    def _parse_txt_bytes(self, content: bytes) -> str:
+        """Extract text from TXT bytes."""
+        return content.decode('utf-8', errors='ignore')
 
     def _extract_from_text(self, text: str) -> ParsedResume:
         """Extract skills and metadata from text."""

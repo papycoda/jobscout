@@ -2,6 +2,8 @@
 
 import sys
 import logging
+import re
+import html
 from pathlib import Path
 from typing import List, Dict, Optional, Set
 from datetime import datetime
@@ -10,7 +12,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from jobscout.config import JobScoutConfig
-from jobscout.resume_parser import ResumeParser
+from jobscout.resume_parser import ResumeParser, ParsedResume
 from jobscout.job_sources.base import JobListing
 from jobscout.job_sources.rss_feeds import RemoteOKSource, WeWorkRemotelySource
 from jobscout.job_sources.remotive_api import RemotiveSource
@@ -24,6 +26,46 @@ from jobscout.emailer import EmailDelivery
 
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_html_tags(html_content: str) -> str:
+    """
+    Strip HTML tags from a string and return clean plain text.
+
+    Args:
+        html_content: String containing HTML markup
+
+    Returns:
+        Clean plain text with HTML tags removed and entities decoded
+    """
+    if not html_content:
+        return ""
+
+    # Remove script and style tags with their content
+    html_content = re.sub(r'<script[^>]*>.*?</script>', '', html_content, flags=re.IGNORECASE | re.DOTALL)
+    html_content = re.sub(r'<style[^>]*>.*?</style>', '', html_content, flags=re.IGNORECASE | re.DOTALL)
+
+    # Remove HTML tags
+    text = re.sub(r'<[^>]+>', '', html_content)
+
+    # Decode HTML entities
+    text = html.unescape(text)
+
+    # Replace common HTML entities
+    text = text.replace('&nbsp;', ' ')
+    text = text.replace('&amp;', '&')
+    text = text.replace('&lt;', '<')
+    text = text.replace('&gt;', '>')
+    text = text.replace('&quot;', '"')
+    text = text.replace('&#39;', "'")
+    text = text.replace('&#x27;', "'")
+    text = text.replace('&#x2F;', '/')
+
+    # Clean up whitespace
+    text = re.sub(r'\s+', ' ', text)
+    text = text.strip()
+
+    return text
 
 
 def _build_scored_jobs_from_json(jobs_json: List[Dict]) -> List[ScoredJob]:
@@ -60,6 +102,18 @@ def _build_scored_jobs_from_json(jobs_json: List[Dict]) -> List[ScoredJob]:
         scored_jobs.append(scored)
 
     return scored_jobs
+
+
+def _resume_from_profile(profile: Dict) -> ParsedResume:
+    years_value = profile.get("years_experience", 0.0) or 0.0
+    return ParsedResume(
+        raw_text=profile.get("raw_text", ""),
+        skills=set(profile.get("skills", [])),
+        tools=set(profile.get("tools", [])),
+        seniority=profile.get("seniority", "unknown"),
+        years_experience=float(years_value),
+        role_keywords=profile.get("role_keywords", [])
+    )
 
 
 def send_email_digest_from_jobs(
@@ -112,7 +166,7 @@ class JobScoutAdapter:
     instead of just sending emails.
     """
 
-    def __init__(self, config: JobScoutConfig):
+    def __init__(self, config: JobScoutConfig, resume_profile: Optional[Dict] = None):
         """Initialize adapter with configuration."""
         self.config = config
 
@@ -122,9 +176,13 @@ class JobScoutAdapter:
         self.filters = HardExclusionFilters(config)
         self.emailer = EmailDelivery(config)
 
-        # Parse resume
-        logger.info(f"Parsing resume from {config.resume_path}")
-        self.resume = self.resume_parser.parse(config.resume_path)
+        # Parse resume (or use stored profile)
+        if resume_profile:
+            logger.info("Using stored resume profile for job search")
+            self.resume = _resume_from_profile(resume_profile)
+        else:
+            logger.info(f"Parsing resume from {config.resume_path}")
+            self.resume = self.resume_parser.parse(config.resume_path)
         logger.info(f"Extracted {len(self.resume.skills)} skills from resume")
 
         # Build preferred stack
@@ -226,6 +284,12 @@ class JobScoutAdapter:
     def _empty_result(self, filtered_jobs: List, start_time: datetime) -> Dict:
         """Return empty result with metadata."""
         end_time = datetime.now()
+
+        must_have_matched = sorted(scored.matching_skills)
+        must_have_missing = sorted(scored.missing_must_haves)
+        if not job.must_have_skills:
+            must_have_matched = stack_matched
+            must_have_missing = stack_missing
 
         return {
             "jobs": [],
@@ -523,6 +587,15 @@ class JobScoutAdapter:
         else:
             sen_expl = "Poor match"
 
+        # Clean HTML from description for snippet
+        clean_description = _strip_html_tags(job.description)
+        snippet = clean_description[:500] + "..." if len(clean_description) > 500 else clean_description
+
+        job_skills = job.must_have_skills | job.nice_to_have_skills
+        candidate_skills = self.scorer.all_candidate_skills
+        stack_matched = sorted(job_skills & candidate_skills)
+        stack_missing = sorted(job_skills - candidate_skills)
+
         return {
             "id": job_id,
             "title": job.title,
@@ -531,7 +604,7 @@ class JobScoutAdapter:
             "posted_at": job.posted_date,
             "apply_url": job.apply_url,
             "source": job.source,
-            "snippet": job.description[:500] + "..." if len(job.description) > 500 else job.description,
+            "snippet": snippet,
             "score_total": round(scored.score, 1),
             "breakdown": {
                 "must_have_coverage": round(scored.must_have_coverage, 2),
@@ -539,12 +612,12 @@ class JobScoutAdapter:
                 "seniority_alignment": round(scored.seniority_alignment, 2)
             },
             "must_have": {
-                "matched": sorted(scored.matching_skills),
-                "missing": sorted(scored.missing_must_haves)
+                "matched": must_have_matched,
+                "missing": must_have_missing
             },
             "stack": {
-                "matched": sorted(scored.matching_skills),
-                "missing": sorted(job.must_have_skills | job.nice_to_have_skills - scored.matching_skills)
+                "matched": stack_matched,
+                "missing": stack_missing
             },
             "seniority": {
                 "expected": job.seniority_level,
@@ -568,13 +641,17 @@ class JobScoutAdapter:
         import hashlib
         job_id = hashlib.sha256(job.apply_url.encode()).hexdigest()[:16]
 
+        # Clean HTML from description for snippet
+        clean_description = _strip_html_tags(job.description)
+        snippet = clean_description[:300] + "..." if len(clean_description) > 300 else clean_description
+
         return {
             "id": job_id,
             "title": job.title,
             "company": job.company,
             "location": job.location,
             "source": job.source,
-            "snippet": job.description[:300] + "..." if len(job.description) > 300 else job.description,
+            "snippet": snippet,
             "score_total": round(score, 1) if score is not None else None,
             "reasons": filtered_item["reasons"]
         }

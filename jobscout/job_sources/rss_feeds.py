@@ -30,9 +30,67 @@ class RemoteOKSource(JobSource):
                     if any(keyword in title.lower() for keyword in ['design', 'marketing', 'sales', 'support']):
                         continue
 
-                    company = entry.get('author', 'Unknown Company')
+                    company = entry.get('author', '')
                     apply_url = entry.get('link', '')
                     description = entry.get('description', '')
+
+                    # Extract company from URL if author field is empty
+                    # RemoteOK URLs format: https://remoteok.com/remote-jobs/role-name-company-slug-ID
+                    if not company and apply_url:
+                        import re
+                        # Extract company slug from URL (part before final dash-number)
+                        # Example: .../remote-software-engineer-agent-infrastructure-openai-1129438
+                        url_parts = apply_url.rstrip('/').split('/')
+                        if len(url_parts) > 1:
+                            job_slug = url_parts[-1]
+                            # Remove the numeric ID at the end
+                            slug_parts = job_slug.rsplit('-', 1)
+                            if len(slug_parts) == 2 and slug_parts[1].isdigit():
+                                # Get everything after "remote-" and before the ID
+                                company_slug = slug_parts[0]
+                                # Remove common prefixes like "remote-", "senior-", etc.
+                                for prefix in ['remote-', 'senior-', 'junior-', 'lead-', 'principal-', 'staff-']:
+                                    if company_slug.startswith(prefix):
+                                        company_slug = company_slug[len(prefix)::]
+                                        break
+                                # Remove role keywords that sometimes appear in the slug
+                                role_keywords = ['engineer', 'developer', 'manager', 'architect', 'designer', 'qa-', 'devops']
+                                for keyword in role_keywords:
+                                    # Try to find the company name after these keywords
+                                    pattern = f'-{keyword}-'
+                                    if pattern in company_slug.lower():
+                                        parts = company_slug.lower().split(pattern)
+                                        if len(parts) > 1:
+                                            company_slug = parts[-1]
+                                        break
+                                # If we still have multiple parts, try to be smarter about extraction
+                                # Keywords that often appear before company names in the slug
+                                pre_company_keywords = ['team', 'platform', 'infrastructure', 'product', 'data', 'backend', 'frontend', 'full-stack']
+                                for keyword in pre_company_keywords:
+                                    pattern = f'-{keyword}-'
+                                    if pattern in company_slug.lower():
+                                        parts = company_slug.lower().split(pattern)
+                                        if len(parts) > 1:
+                                            company_slug = parts[-1]
+                                            break
+
+                                # Check for company suffixes before doing aggressive trimming
+                                company_suffixes = ['inc', 'llc', 'ltd', 'corp', 'corporation', 'co', 'gmbh', 'pty', 'io', 'ai']
+                                slug_lower = company_slug.lower()
+                                has_suffix = any(suffix in slug_lower.split('-')[-1] for suffix in company_suffixes)
+
+                                # If still multiple parts and no clear company suffix, be aggressive
+                                if '-' in company_slug and not has_suffix:
+                                    parts = company_slug.split('-')
+                                    if len(parts) > 2:
+                                        # Be more aggressive - take last 1-2 segments only
+                                        company_slug = '-'.join(parts[-1:] if len(parts) <= 3 else parts[-2:])
+
+                                # Clean up and format
+                                company = company_slug.replace('-', ' ').strip().title()
+
+                    if not company:
+                        company = 'Unknown Company'
 
                     # Extract location from description (RemoteOK is 100% remote)
                     location = "Remote"
