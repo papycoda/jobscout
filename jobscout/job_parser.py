@@ -3,8 +3,11 @@
 import re
 import logging
 from dataclasses import dataclass
-from typing import Set, List, Optional
+from typing import Set, List, Optional, TYPE_CHECKING
 from .resume_parser import SKILL_DICT
+
+if TYPE_CHECKING:
+    from .config import JobScoutConfig
 
 
 logger = logging.getLogger(__name__)
@@ -35,10 +38,32 @@ class ParsedJob:
 class JobParser:
     """Parse job descriptions to extract structured requirements."""
 
-    def __init__(self):
-        """Initialize parser with skill patterns."""
+    def __init__(self, config: Optional["JobScoutConfig"] = None):
+        """
+        Initialize parser with skill patterns and optional LLM support.
+
+        Args:
+            config: Optional config for LLM parser settings
+        """
         self._build_patterns()
         self._build_section_patterns()
+        self.llm_parser = None
+        self.use_llm = False
+
+        if config and config.use_llm_parser and config.openai_api_key:
+            try:
+                from .llm_parser import LLMJobParser
+                self.llm_parser = LLMJobParser(
+                    api_key=config.openai_api_key,
+                    model=config.openai_model,
+                    fallback_parser=self
+                )
+                self.use_llm = True
+                logger.info(f"LLM parser enabled with model: {config.openai_model}")
+            except ImportError as e:
+                logger.warning(f"Failed to initialize LLM parser: {e}. Using regex parser.")
+            except Exception as e:
+                logger.warning(f"Failed to initialize LLM parser: {e}. Using regex parser.")
 
     def _build_patterns(self):
         """Build regex patterns for skill matching."""
@@ -96,7 +121,26 @@ class JobParser:
         self.section_stop_pattern = re.compile(stop_pattern, re.IGNORECASE)
 
     def parse(self, job) -> ParsedJob:
-        """Parse job listing to extract requirements."""
+        """
+        Parse job listing to extract requirements.
+
+        Uses LLM parser if enabled and available, otherwise falls back to regex.
+        """
+        # Try LLM parser if enabled
+        if self.use_llm and self.llm_parser:
+            try:
+                job_metadata = {
+                    "title": job.title,
+                    "company": job.company,
+                    "location": job.location,
+                    "apply_url": job.apply_url,
+                    "source": job.source,
+                }
+                return self.llm_parser.parse(job.description, job_metadata)
+            except Exception as e:
+                logger.warning(f"LLM parsing failed for {job.title} at {job.company}: {e}. Falling back to regex.")
+
+        # Fallback to regex-based parsing
         description = job.description.lower()
 
         # Find requirements section

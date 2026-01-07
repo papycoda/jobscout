@@ -3,6 +3,7 @@
 import os
 import sys
 import logging
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -102,6 +103,7 @@ def create_config_from_env():
             email=email,
             schedule=schedule,
             job_preferences=job_prefs,
+            serper_api_key=os.getenv("SERPER_API_KEY"),
             outbox_dir=os.getenv("OUTBOX_DIR", "./outbox"),
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             min_score_threshold=float(os.getenv("MIN_SCORE_THRESHOLD", "65.0")),
@@ -328,6 +330,8 @@ async def get_config():
                 email_data["smtp_from"] = "******"
             if config_data.get("openai_api_key"):
                 config_data["openai_api_key"] = "******"
+            if config_data.get("serper_api_key"):
+                config_data["serper_api_key"] = "******"
 
             config_yaml = yaml.safe_dump(config_data, sort_keys=False)
             return ConfigResponse(config_yaml=config_yaml)
@@ -510,7 +514,11 @@ async def get_run_status(run_id: str):
 
 
 @app.get("/api/jobs", response_model=JobsListResponse)
-async def get_jobs(run_id: str = Query(..., description="Run ID from /api/search")):
+async def get_jobs(
+    run_id: str = Query(..., description="Run ID from /api/search"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=200, description="Items per page")
+):
     """Get matching jobs from a run."""
     try:
         jobs = storage.load_run_jobs(run_id)
@@ -521,7 +529,21 @@ async def get_jobs(run_id: str = Query(..., description="Run ID from /api/search
                 detail=f"Run {run_id} not found"
             )
 
-        return JobsListResponse(jobs=jobs)
+        total = len(jobs)
+        total_pages = math.ceil(total / page_size) if total else 0
+        start = (page - 1) * page_size
+        end = start + page_size
+        paged = jobs[start:end]
+
+        return JobsListResponse(
+            jobs=paged,
+            pagination=Pagination(
+                page=page,
+                page_size=page_size,
+                total=total,
+                total_pages=total_pages
+            )
+        )
 
     except HTTPException:
         raise
@@ -567,7 +589,11 @@ async def get_job_details(job_id: str, run_id: str = Query(..., description="Run
 
 
 @app.get("/api/filtered-jobs", response_model=FilteredJobsListResponse)
-async def get_filtered_jobs(run_id: str = Query(..., description="Run ID from /api/search")):
+async def get_filtered_jobs(
+    run_id: str = Query(..., description="Run ID from /api/search"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=200, description="Items per page")
+):
     """Get filtered-out jobs from a run."""
     try:
         filtered_jobs = storage.load_run_filtered_jobs(run_id)
@@ -578,7 +604,21 @@ async def get_filtered_jobs(run_id: str = Query(..., description="Run ID from /a
                 detail=f"Run {run_id} not found"
             )
 
-        return FilteredJobsListResponse(filtered_jobs=filtered_jobs)
+        total = len(filtered_jobs)
+        total_pages = math.ceil(total / page_size) if total else 0
+        start = (page - 1) * page_size
+        end = start + page_size
+        paged = filtered_jobs[start:end]
+
+        return FilteredJobsListResponse(
+            filtered_jobs=paged,
+            pagination=Pagination(
+                page=page,
+                page_size=page_size,
+                total=total,
+                total_pages=total_pages
+            )
+        )
 
     except HTTPException:
         raise
@@ -774,6 +814,115 @@ async def get_digest(digest_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to load digest: {str(e)}"
+        )
+
+
+# LLM Model Management Endpoints
+
+@app.get("/api/llm/models", response_model=AvailableModelsResponse)
+async def list_available_models():
+    """Get all available LLM models grouped by provider."""
+    try:
+        from jobscout.llm_providers import get_available_models_for_frontend, DEFAULT_MODEL
+
+        models = get_available_models_for_frontend()
+
+        return AvailableModelsResponse(
+            models=models,
+            default_model=DEFAULT_MODEL
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to list models: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list models: {str(e)}"
+        )
+
+
+@app.post("/api/llm/select-model", response_model=UpdateLLMModelResponse)
+async def select_llm_model(request: UpdateLLMModelRequest):
+    """
+    Select and configure an LLM model for job parsing.
+
+    If api_key is provided, it will be stored for future use.
+    Otherwise, uses the existing stored key for that provider.
+    """
+    try:
+        from jobscout.llm_providers import get_model
+
+        # Validate model ID
+        model = get_model(request.model_id)
+        if not model:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown model: {request.model_id}"
+            )
+
+        # Store the selection
+        if request.api_key:
+            # Store the API key securely (in practice, you'd encrypt this)
+            storage.save_llm_config({
+                "model_id": request.model_id,
+                "api_key": request.api_key,
+                "provider": model.provider.value
+            })
+        else:
+            # Just update the model selection
+            storage.save_llm_config({
+                "model_id": request.model_id,
+                "provider": model.provider.value
+            })
+
+        return UpdateLLMModelResponse(
+            success=True,
+            model_id=request.model_id,
+            model_name=model.name
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to select model: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to select model: {str(e)}"
+        )
+
+
+@app.get("/api/llm/current-model")
+async def get_current_model():
+    """Get the currently selected LLM model."""
+    try:
+        llm_config = storage.load_llm_config()
+
+        if not llm_config:
+            # Return default
+            from jobscout.llm_providers import DEFAULT_MODEL, get_model
+            model = get_model(DEFAULT_MODEL)
+
+            return {
+                "model_id": DEFAULT_MODEL,
+                "model_name": model.name if model else "Unknown",
+                "provider": model.provider.value if model else "unknown",
+                "configured": False
+            }
+
+        from jobscout.llm_providers import get_model
+        model = get_model(llm_config.get("model_id", DEFAULT_MODEL))
+
+        return {
+            "model_id": llm_config.get("model_id"),
+            "model_name": model.name if model else "Unknown",
+            "provider": llm_config.get("provider", "unknown"),
+            "configured": True
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get current model: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get current model: {str(e)}"
         )
 
 

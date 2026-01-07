@@ -41,5 +41,8 @@ def test_empty_result_handles_filtered_jobs(tmp_path):
     assert result["metadata"]["status"] == "completed"
     assert result["metadata"]["matching"] == 0
     assert len(result["filtered_jobs"]) == 1
+    assert result["filtered_jobs"][0]["apply_url"] == "https://example.com/apply"
     assert result["filtered_jobs"][0]["reasons"] == ["location mismatch"]
+    assert result["filtered_jobs"][0]["reason_summary"] == "Location mismatch"
+    assert result["filtered_jobs"][0]["reason_detail"] == "location mismatch"
     assert result["filtered_jobs"][0]["score_total"] is None

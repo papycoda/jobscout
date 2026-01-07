@@ -35,7 +35,7 @@ class JobScout:
 
         # Initialize components
         self.resume_parser = ResumeParser()
-        self.job_parser = JobParser()
+        self.job_parser = JobParser(config)  # Pass config for LLM support
         self.filters = HardExclusionFilters(config)
         self.emailer = EmailDelivery(config)
 
@@ -117,7 +117,9 @@ class JobScout:
         # Default sources if none specified
         boards = self.config.job_preferences.job_boards
         if not boards:
-            boards = ["remoteok", "weworkremotely", "remotive", "greenhouse", "lever", "boolean"]
+            boards = ["remoteok", "weworkremotely", "remotive", "greenhouse", "lever"]
+            if self.config.serper_api_key:
+                boards.append("boolean")
 
         # Fetch from each source
         for board in boards:
@@ -155,8 +157,12 @@ class JobScout:
 
         elif board_lower == "boolean":
             source = BooleanSearchSource(
-                self.resume.skills,
-                self.resume.role_keywords
+                resume_skills=self.resume.skills,
+                role_keywords=self.resume.role_keywords,
+                seniority=self.resume.seniority,
+                location_preference=self.config.job_preferences.location_preference,
+                max_job_age_days=self.config.job_preferences.max_job_age_days,
+                serper_api_key=self.config.serper_api_key
             )
             return source.fetch_jobs(limit=30)
 

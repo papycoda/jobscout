@@ -51,8 +51,13 @@ class JobScoutConfig:
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
     job_preferences: JobPreferences = field(default_factory=JobPreferences)
 
-    # Optional API keys (for future enhancements)
+    # LLM Parser settings
+    use_llm_parser: bool = False  # Enable LLM-enhanced job parsing
     openai_api_key: Optional[str] = None
+    openai_model: str = "gpt-4o-mini"  # Model to use for job parsing
+
+    # Optional API keys
+    serper_api_key: Optional[str] = None
 
     # Paths
     outbox_dir: str = "./outbox"

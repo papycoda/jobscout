@@ -63,8 +63,16 @@ class JobDetails(BaseModel):
     seniority: SeniorityDetails
 
 
+class Pagination(BaseModel):
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
+
+
 class JobsListResponse(BaseModel):
     jobs: List[JobDetails]
+    pagination: Optional[Pagination] = None
 
 
 class FilteredJobDetails(BaseModel):
@@ -72,14 +80,18 @@ class FilteredJobDetails(BaseModel):
     title: str
     company: str
     location: str
+    apply_url: str
     source: str
     snippet: str
     score_total: Optional[float]
     reasons: List[str]
+    reason_summary: Optional[str] = None
+    reason_detail: Optional[str] = None
 
 
 class FilteredJobsListResponse(BaseModel):
     filtered_jobs: List[FilteredJobDetails]
+    pagination: Optional[Pagination] = None
 
 
 class SendDigestRequest(BaseModel):
@@ -111,3 +123,33 @@ class DigestResponse(BaseModel):
     html: str
     created_at: str
     subject: str
+
+
+# LLM Models
+class LLMModelInfo(BaseModel):
+    id: str
+    name: str
+    description: str
+    supports_reasoning: bool
+    cost_estimate: str
+
+
+class LLMProviderModels(BaseModel):
+    provider: str
+    models: List[LLMModelInfo]
+
+
+class AvailableModelsResponse(BaseModel):
+    models: List[LLMProviderModels]
+    default_model: str
+
+
+class UpdateLLMModelRequest(BaseModel):
+    model_id: str
+    api_key: Optional[str] = None  # If not provided, uses stored key
+
+
+class UpdateLLMModelResponse(BaseModel):
+    success: bool
+    model_id: str
+    model_name: str

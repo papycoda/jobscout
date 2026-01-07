@@ -642,3 +642,21 @@ class Storage:
 
         candidates.sort(key=lambda item: item[0], reverse=True)
         return candidates[0][1]
+
+    def save_llm_config(self, config: Dict) -> None:
+        """Save LLM configuration (model selection and API key)."""
+        self._ensure_directories()
+        llm_config_path = self.base_dir / "llm_config.json"
+        llm_config_path.write_text(json.dumps(config, indent=2))
+
+    def load_llm_config(self) -> Optional[Dict]:
+        """Load LLM configuration."""
+        llm_config_path = self.base_dir / "llm_config.json"
+
+        if not llm_config_path.exists():
+            return None
+
+        try:
+            return json.loads(llm_config_path.read_text())
+        except Exception:
+            return None

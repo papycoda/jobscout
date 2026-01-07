@@ -68,6 +68,33 @@ def _strip_html_tags(html_content: str) -> str:
     return text
 
 
+def _summarize_reasons(reasons: List[str]) -> tuple[str, str]:
+    """Create a short summary and full detail string for filter reasons."""
+    if not reasons:
+        return "Filtered out", ""
+
+    detail = "; ".join(reasons)
+
+    summary_map = {
+        "score below threshold": "Below score threshold",
+        "must-have coverage too low": "Must-have coverage low",
+        "no must-have skills and score below fallback": "Low score (no must-haves)",
+        "location mismatch": "Location mismatch",
+        "job too old": "Job too old",
+        "description too short": "Description too short",
+        "posting date missing": "Posting date missing",
+        "missing or invalid apply url": "Missing apply URL",
+    }
+
+    for reason in reasons:
+        reason_lower = reason.lower()
+        for prefix, summary in summary_map.items():
+            if reason_lower.startswith(prefix):
+                return summary, detail
+
+    return reasons[0], detail
+
+
 def _build_scored_jobs_from_json(jobs_json: List[Dict]) -> List[ScoredJob]:
     scored_jobs = []
 
@@ -172,7 +199,7 @@ class JobScoutAdapter:
 
         # Initialize components
         self.resume_parser = ResumeParser()
-        self.job_parser = JobParser()
+        self.job_parser = JobParser(config)  # Pass config for LLM support
         self.filters = HardExclusionFilters(config)
         self.emailer = EmailDelivery(config)
 
@@ -304,6 +331,8 @@ class JobScoutAdapter:
         boards = self.config.job_preferences.job_boards
         if not boards:
             boards = ["remoteok", "weworkremotely", "remotive", "greenhouse", "lever"]
+            if self.config.serper_api_key:
+                boards.append("boolean")
 
         for board in boards:
             try:
@@ -335,6 +364,16 @@ class JobScoutAdapter:
         elif board_lower == "lever":
             source = LeverSource(self.config.job_preferences.lever_companies)
             return source.fetch_jobs(limit=50)
+        elif board_lower == "boolean":
+            source = BooleanSearchSource(
+                resume_skills=self.resume.skills,
+                role_keywords=self.resume.role_keywords,
+                seniority=self.resume.seniority,
+                location_preference=self.config.job_preferences.location_preference,
+                max_job_age_days=self.config.job_preferences.max_job_age_days,
+                serper_api_key=self.config.serper_api_key
+            )
+            return source.fetch_jobs(limit=30)
         else:
             logger.warning(f"Unknown job board: {board}")
             return []
@@ -381,17 +420,28 @@ class JobScoutAdapter:
         if not job.apply_url or not job.apply_url.startswith(('http://', 'https://')):
             return "Missing or invalid apply URL"
 
-        # Location preference
+        # Location preference - smarter matching
         pref = self.config.job_preferences.location_preference.lower()
         if pref != "any":
             job_location = job.location.lower()
 
-            if pref == "remote" and "remote" not in job_location and "anywhere" not in job_location:
-                return f"Location mismatch: wants remote, job is {job.location}"
-            elif pref == "hybrid" and "hybrid" not in job_location and "remote" not in job_location:
-                return f"Location mismatch: wants hybrid/remote, job is {job.location}"
-            elif pref == "onsite" and ("remote" in job_location or "anywhere" in job_location):
-                return f"Location mismatch: wants onsite, job is {job.location}"
+            # Check if the location field OR description contains remote indicators
+            combined_text = f"{job.location} {job.description}".lower()
+            has_remote = any(indicator in combined_text for indicator in
+                          ['remote', 'anywhere', 'global', 'distributed', 'home-based'])
+
+            if pref == "remote":
+                # Accept if explicitly says remote/anywhere OR if location is vague/empty
+                if not has_remote and job_location and not any(
+                    vague in job_location for vague in ['remote', 'anywhere', 'global', 'n/a', '-']
+                ):
+                    return f"Location mismatch: wants remote, job is {job.location}"
+            elif pref == "hybrid":
+                if not (has_remote or 'hybrid' in combined_text):
+                    return f"Location mismatch: wants hybrid/remote, job is {job.location}"
+            elif pref == "onsite":
+                if has_remote:
+                    return f"Location mismatch: wants onsite, job is remote"
 
         # Job age
         if job.posted_date:
@@ -406,8 +456,9 @@ class JobScoutAdapter:
             except Exception:
                 pass
 
-        # Content quality
-        if len(job.description) < 200:
+        # Content quality - more lenient
+        # Allow shorter descriptions if job has meaningful content
+        if len(job.description) < 50:
             return "Description too short"
 
         # Passed all filters
@@ -643,16 +694,20 @@ class JobScoutAdapter:
         # Clean HTML from description for snippet
         clean_description = _strip_html_tags(job.description)
         snippet = clean_description[:300] + "..." if len(clean_description) > 300 else clean_description
+        summary, detail = _summarize_reasons(filtered_item.get("reasons", []))
 
         return {
             "id": job_id,
             "title": job.title,
             "company": job.company,
             "location": job.location,
+            "apply_url": job.apply_url,
             "source": job.source,
             "snippet": snippet,
             "score_total": round(score, 1) if score is not None else None,
-            "reasons": filtered_item["reasons"]
+            "reasons": filtered_item["reasons"],
+            "reason_summary": summary,
+            "reason_detail": detail
         }
 
     def send_email_digest(self, jobs_json: List[Dict], outbox_mode: bool = False) -> Dict:
