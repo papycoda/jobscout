@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from jobscout.config import JobScoutConfig
 from backend.storage import Storage
-from backend.adapter import JobScoutAdapter
+from backend.adapter import JobScoutAdapter, send_email_digest_from_jobs
 from backend.models import *
 
 
@@ -35,7 +35,7 @@ app = FastAPI(
 
 
 # CORS configuration
-cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,https://jobscoutpro.netlify.app").split(",")
+cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:8080,https://jobscoutpro.netlify.app").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
@@ -632,9 +632,8 @@ async def send_digest(request: SendDigestRequest):
         # Check if outbox mode
         outbox_mode = os.getenv("OUTBOX_MODE", "false").lower() == "true"
 
-        # Use adapter to send email
-        adapter = JobScoutAdapter(config)
-        result = adapter.send_email_digest(jobs, outbox_mode=outbox_mode)
+        # Send digest without reparsing resume
+        result = send_email_digest_from_jobs(jobs, config, outbox_mode=outbox_mode)
 
         # Save digest to storage
         from datetime import datetime

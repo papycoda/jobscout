@@ -26,6 +26,84 @@ from jobscout.emailer import EmailDelivery
 logger = logging.getLogger(__name__)
 
 
+def _build_scored_jobs_from_json(jobs_json: List[Dict]) -> List[ScoredJob]:
+    scored_jobs = []
+
+    for job_dict in jobs_json:
+        # Create minimal ParsedJob
+        from jobscout.job_parser import ParsedJob
+        from jobscout.scoring import ScoredJob
+
+        parsed_job = ParsedJob(
+            title=job_dict["title"],
+            company=job_dict["company"],
+            location=job_dict["location"],
+            description=job_dict["snippet"],
+            apply_url=job_dict["apply_url"],
+            source=job_dict["source"],
+            must_have_skills=set(job_dict["must_have"]["matched"] + job_dict["must_have"]["missing"]),
+            nice_to_have_skills=set(),
+            posted_date=job_dict.get("posted_at")
+        )
+
+        scored = ScoredJob(
+            job=parsed_job,
+            score=job_dict["score_total"],
+            is_apply_ready=True,
+            must_have_coverage=job_dict["breakdown"]["must_have_coverage"],
+            stack_overlap=job_dict["breakdown"]["stack_overlap"],
+            seniority_alignment=job_dict["breakdown"]["seniority_alignment"],
+            missing_must_haves=set(job_dict["must_have"]["missing"]),
+            matching_skills=set(job_dict["must_have"]["matched"])
+        )
+
+        scored_jobs.append(scored)
+
+    return scored_jobs
+
+
+def send_email_digest_from_jobs(
+    jobs_json: List[Dict],
+    config: JobScoutConfig,
+    outbox_mode: bool = False
+) -> Dict:
+    """
+    Send email digest without parsing the resume.
+
+    Returns: (digest_id, mode)
+    """
+    if not jobs_json:
+        raise ValueError("No jobs to send")
+
+    scored_jobs = _build_scored_jobs_from_json(jobs_json)
+    emailer = EmailDelivery(config)
+
+    if outbox_mode:
+        original_smtp_config = (
+            config.email.smtp_host,
+            config.email.smtp_username,
+            config.email.smtp_password
+        )
+        config.email.smtp_host = None
+        config.email.smtp_username = None
+        config.email.smtp_password = None
+
+    success = emailer.send_digest(scored_jobs)
+
+    if outbox_mode:
+        config.email.smtp_host, config.email.smtp_username, config.email.smtp_password = original_smtp_config
+
+    if not success:
+        raise Exception("Failed to send email digest")
+
+    digest_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    return {
+        "digest_id": digest_id,
+        "mode": "outbox" if outbox_mode else "smtp"
+    }
+
+
 class JobScoutAdapter:
     """
     Adapter that wraps JobScout and captures JSON outputs.
@@ -507,68 +585,4 @@ class JobScoutAdapter:
 
         Returns: (digest_id, mode)
         """
-        if not jobs_json:
-            raise ValueError("No jobs to send")
-
-        # Reconstruct ScoredJob objects from JSON
-        # This is a bit hacky but necessary to reuse EmailDelivery
-        scored_jobs = []
-
-        for job_dict in jobs_json:
-            # Create minimal ParsedJob
-            from jobscout.job_parser import ParsedJob
-            from jobscout.scoring import ScoredJob
-
-            parsed_job = ParsedJob(
-                title=job_dict["title"],
-                company=job_dict["company"],
-                location=job_dict["location"],
-                description=job_dict["snippet"],
-                apply_url=job_dict["apply_url"],
-                source=job_dict["source"],
-                must_have_skills=set(job_dict["must_have"]["matched"] + job_dict["must_have"]["missing"]),
-                nice_to_have_skills=set(),
-                posted_date=job_dict.get("posted_at")
-            )
-
-            scored = ScoredJob(
-                job=parsed_job,
-                score=job_dict["score_total"],
-                is_apply_ready=True,
-                must_have_coverage=job_dict["breakdown"]["must_have_coverage"],
-                stack_overlap=job_dict["breakdown"]["stack_overlap"],
-                seniority_alignment=job_dict["breakdown"]["seniority_alignment"],
-                missing_must_haves=set(job_dict["must_have"]["missing"]),
-                matching_skills=set(job_dict["must_have"]["matched"])
-            )
-
-            scored_jobs.append(scored)
-
-        # Override outbox mode if requested
-        if outbox_mode:
-            original_smtp_config = (
-                self.config.email.smtp_host,
-                self.config.email.smtp_username,
-                self.config.email.smtp_password
-            )
-            self.config.email.smtp_host = None
-            self.config.email.smtp_username = None
-            self.config.email.smtp_password = None
-
-        # Send digest
-        success = self.emailer.send_digest(scored_jobs)
-
-        # Restore SMTP config if we overrode it
-        if outbox_mode:
-            self.config.email.smtp_host, self.config.email.smtp_username, self.config.email.smtp_password = original_smtp_config
-
-        if not success:
-            raise Exception("Failed to send email digest")
-
-        # Generate digest ID
-        digest_id = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-        return {
-            "digest_id": digest_id,
-            "mode": "outbox" if outbox_mode else "smtp"
-        }
+        return send_email_digest_from_jobs(jobs_json, self.config, outbox_mode=outbox_mode)
