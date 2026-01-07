@@ -285,12 +285,6 @@ class JobScoutAdapter:
         """Return empty result with metadata."""
         end_time = datetime.now()
 
-        must_have_matched = sorted(scored.matching_skills)
-        must_have_missing = sorted(scored.missing_must_haves)
-        if not job.must_have_skills:
-            must_have_matched = stack_matched
-            must_have_missing = stack_missing
-
         return {
             "jobs": [],
             "filtered_jobs": [self._filtered_job_to_dict(j) for j in filtered_jobs],
