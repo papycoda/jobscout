@@ -66,6 +66,35 @@ class JobParser:
             re.compile(r'(\d+)\+?\s*years?\s*(of)?\s*(professional|work)', re.IGNORECASE),
         ]
 
+        self.primary_requirement_headers = [
+            "requirements",
+            "qualifications",
+            "what you'll bring",
+            "you have",
+            "must have",
+            "required",
+            "essential",
+        ]
+        self.secondary_requirement_headers = [
+            "responsibilities",
+            "about the role",
+        ]
+        self.nice_to_have_headers = [
+            "nice to have",
+            "bonus",
+            "preferred",
+            "plus",
+            "desirable",
+        ]
+
+        stop_headers = (
+            self.primary_requirement_headers
+            + self.secondary_requirement_headers
+            + self.nice_to_have_headers
+        )
+        stop_pattern = r'\n\s*(' + '|'.join(re.escape(h) for h in stop_headers) + r')\s*\n'
+        self.section_stop_pattern = re.compile(stop_pattern, re.IGNORECASE)
+
     def parse(self, job) -> ParsedJob:
         """Parse job listing to extract requirements."""
         description = job.description.lower()
@@ -96,22 +125,14 @@ class JobParser:
 
     def _extract_requirements_section(self, full_description: str) -> str:
         """Extract the requirements/qualifications section from description."""
-        # Split by common headers
-        sections = re.split(
-            r'\n\s*(requirements|qualifications|what you\'?ll bring|you have|responsibilities|about the role)\s*\n',
-            full_description,
-            flags=re.IGNORECASE
-        )
+        section = self._extract_section_by_headers(full_description, self.primary_requirement_headers)
+        if section:
+            return section
 
-        # Look for section that starts with requirements-related words
-        for i, section in enumerate(sections):
-            if i > 0 and section:
-                # Check if this section is about requirements
-                section_lower = section.lower()
-                if any(pattern.search(section_lower) for pattern in self.must_have_patterns):
-                    return section
+        section = self._extract_section_by_headers(full_description, self.secondary_requirement_headers)
+        if section:
+            return section
 
-        # Fallback: return full description
         return full_description
 
     def _extract_skills(self, text: str) -> Set[str]:
@@ -128,20 +149,40 @@ class JobParser:
         """Extract nice-to-have skills from description."""
         found_skills = set()
 
-        # Look for nice-to-have section
+        section = self._extract_section_by_headers(full_description, self.nice_to_have_headers)
+        if section:
+            found_skills.update(self._extract_skills(section))
+
+        return found_skills
+
+    def _extract_section_by_headers(self, full_description: str, headers: List[str]) -> str:
+        """Extract the first section that follows any header in the list."""
+        if not headers:
+            return ""
+
+        header_pattern = '|'.join(re.escape(h) for h in headers)
         sections = re.split(
-            r'\n\s*(nice to have|bonus|preferred|plus|desirable)\s*\n',
+            rf'\n\s*({header_pattern})\s*\n',
             full_description,
             flags=re.IGNORECASE
         )
 
-        for i, section in enumerate(sections):
-            if i > 0 and section:
-                # Extract skills from this section
-                skills = self._extract_skills(section)
-                found_skills.update(skills)
+        if len(sections) < 3:
+            return ""
 
-        return found_skills
+        for i in range(1, len(sections), 2):
+            content = sections[i + 1] if i + 1 < len(sections) else ""
+            if content:
+                return self._truncate_section(content)
+
+        return ""
+
+    def _truncate_section(self, section_text: str) -> str:
+        """Trim a section at the next header boundary."""
+        parts = self.section_stop_pattern.split(section_text)
+        if parts:
+            return parts[0].strip()
+        return section_text.strip()
 
     def _extract_seniority_requirements(self, description: str) -> tuple[Optional[float], str]:
         """Extract experience and seniority requirements."""
