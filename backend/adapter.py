@@ -595,6 +595,11 @@ class JobScoutAdapter:
         candidate_skills = self.scorer.all_candidate_skills
         stack_matched = sorted(job_skills & candidate_skills)
         stack_missing = sorted(job_skills - candidate_skills)
+        must_have_matched = sorted(scored.matching_skills)
+        must_have_missing = sorted(scored.missing_must_haves)
+        if not job.must_have_skills:
+            must_have_matched = stack_matched
+            must_have_missing = stack_missing
 
         return {
             "id": job_id,

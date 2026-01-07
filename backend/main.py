@@ -138,9 +138,11 @@ def get_or_create_config() -> JobScoutConfig:
     try:
         config = JobScoutConfig.from_yaml_str(config_yaml)
         errors = config.validate()
-
         if errors:
-            logger.warning(f"Config validation errors: {errors}")
+            if resume_profile and "Resume file not found" in " ".join(errors):
+                errors = [e for e in errors if not e.startswith("Resume file not found")]
+            if errors:
+                logger.warning(f"Config validation errors: {errors}")
 
         return config
     except Exception as e:
