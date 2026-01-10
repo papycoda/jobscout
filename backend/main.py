@@ -692,6 +692,7 @@ async def search_jobs(request: dict):
             score = None
             is_matched = True
             job_requirements = getattr(job, '_llm_requirements', {})
+            has_must_haves = bool(job.must_have_skills)
 
             # Apply hard exclusion filters (content quality, location, truncation, role mismatch, etc.)
             exclusion_reason = filters._check_exclusion(job)
