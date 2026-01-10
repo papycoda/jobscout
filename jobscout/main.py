@@ -117,7 +117,11 @@ class JobScout:
         # Default sources if none specified
         boards = self.config.job_preferences.job_boards
         if not boards:
-            boards = ["remoteok", "weworkremotely", "remotive", "greenhouse", "lever"]
+            boards = ["remoteok", "weworkremotely", "remotive"]
+            if self.config.job_preferences.greenhouse_boards:
+                boards.append("greenhouse")
+            if self.config.job_preferences.lever_companies:
+                boards.append("lever")
             if self.config.serper_api_key:
                 boards.append("boolean")
 
@@ -186,13 +190,14 @@ class JobScout:
 
     def _deduplicate_jobs(self, scored_jobs) -> List:
         """Deduplicate jobs within a single run."""
-        seen_hashes = set()
+        seen_urls = set()
         unique_jobs = []
 
         for scored_job in scored_jobs:
-            job_hash = hash(scored_job.job)
-            if job_hash not in seen_hashes:
-                seen_hashes.add(job_hash)
+            # Use apply_url as unique identifier instead of hashing the object
+            job_url = scored_job.job.apply_url
+            if job_url not in seen_urls:
+                seen_urls.add(job_url)
                 unique_jobs.append(scored_job)
 
         return unique_jobs

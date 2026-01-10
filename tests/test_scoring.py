@@ -187,3 +187,74 @@ class TestJobScorer:
             scored = scored_jobs[0]
             # Should have redis and/or kubernetes in missing
             assert len(scored.missing_must_haves) > 0
+
+    def test_languages_frameworks_weighted_higher(self, sample_resume, sample_config):
+        """Jobs with language/framework matches should outrank infra-only matches when counts tie."""
+        scorer = JobScorer(sample_resume, sample_config, set())
+
+        # Both jobs match exactly one required skill, but one is a language/framework (higher weight)
+        job_language = ParsedJob(
+            title="Backend Engineer",
+            company="TestCorp",
+            location="Remote",
+            description="Python and Kubernetes",
+            apply_url="https://example.com/apply1",
+            source="Test",
+            must_have_skills={"python", "kubernetes"},
+            nice_to_have_skills=set(),
+            min_years_experience=3,
+            seniority_level="mid"
+        )
+        job_infra = ParsedJob(
+            title="Platform Engineer",
+            company="TestCorp",
+            location="Remote",
+            description="Docker and Kubernetes",
+            apply_url="https://example.com/apply2",
+            source="Test",
+            must_have_skills={"docker", "kubernetes"},
+            nice_to_have_skills=set(),
+            min_years_experience=3,
+            seniority_level="mid"
+        )
+
+        scored_lang = scorer._score_job(job_language)
+        scored_infra = scorer._score_job(job_infra)
+
+        assert scored_lang.score > scored_infra.score
+
+    def test_role_alignment_affects_apply_readiness(self, sample_resume, sample_config):
+        """Role mismatch should prevent apply-ready when both sides are explicit."""
+        scorer = JobScorer(sample_resume, sample_config, set())
+
+        backend_job = ParsedJob(
+            title="Backend Engineer",
+            company="TestCorp",
+            location="Remote",
+            description="API work with Python and Django",
+            apply_url="https://example.com/apply3",
+            source="Test",
+            must_have_skills={"python", "django"},
+            nice_to_have_skills=set(),
+            min_years_experience=3,
+            seniority_level="mid"
+        )
+        mobile_job = ParsedJob(
+            title="Mobile Engineer",
+            company="TestCorp",
+            location="Remote",
+            description="Android experience with Python and Django",
+            apply_url="https://example.com/apply4",
+            source="Test",
+            must_have_skills={"python", "django"},  # Skills match but role should not
+            nice_to_have_skills=set(),
+            min_years_experience=3,
+            seniority_level="mid"
+        )
+
+        scored_backend = scorer._score_job(backend_job)
+        scored_mobile = scorer._score_job(mobile_job)
+
+        assert scored_backend.score > scored_mobile.score
+        assert scored_backend.is_apply_ready
+        assert not scored_mobile.is_apply_ready

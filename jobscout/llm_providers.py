@@ -228,21 +228,27 @@ class MultiProviderLLMClient:
             "model": self.model_id,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
             **kwargs
         }
 
-        # Add reasoning-specific parameters for o1/o3 models
-        if self.model.supports_reasoning and self.provider == LLMProvider.OPENAI:
-            params["max_completion_tokens"] = max_tokens
-            del params["max_tokens"]
-
         try:
-            response = self.client.chat.completions.create(**params)
-            return response.choices[0].message.content.strip()
+            response = self.client.chat.completions.create(
+                **params,
+                max_completion_tokens=max_tokens,
+            )
         except Exception as e:
-            logger.error(f"LLM API call failed: {e}")
-            raise
+            msg = str(e).lower()
+            # Some legacy models require max_tokens instead of max_completion_tokens
+            if "max_completion_tokens" in msg and "unsupported" in msg:
+                response = self.client.chat.completions.create(
+                    **params,
+                    max_tokens=max_tokens,
+                )
+            else:
+                logger.error(f"LLM API call failed: {e}")
+                raise
+
+        return response.choices[0].message.content.strip()
 
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the current model."""

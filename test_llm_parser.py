@@ -63,11 +63,11 @@ def test_llm_parser():
     print(job_description[:200] + "...")
     print("=" * 80)
 
-    # Test with gpt-4o-mini (cost-effective)
-    print("\n🤖 Testing LLM parser with gpt-4o-mini...")
+    # Test with gpt-5-mini (latest cost-effective)
+    print("\n🤖 Testing LLM parser with gpt-5-mini...")
 
     try:
-        parser = LLMJobParser(api_key=api_key, model="gpt-4o-mini")
+        parser = LLMJobParser(api_key=api_key, model="gpt-5-mini")
 
         result = parser.parse(job_description, job_metadata)
 
@@ -123,7 +123,7 @@ def test_comparison():
 
     # Test LLM parser
     try:
-        llm_parser = LLMJobParser(api_key=api_key, model="gpt-4o-mini")
+        llm_parser = LLMJobParser(api_key=api_key, model="gpt-5-mini")
         llm_result = llm_parser.parse(job_description, {
             "title": "Senior Full Stack Developer",
             "company": "TestCo",

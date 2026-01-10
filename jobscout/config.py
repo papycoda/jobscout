@@ -54,7 +54,7 @@ class JobScoutConfig:
     # LLM Parser settings
     use_llm_parser: bool = False  # Enable LLM-enhanced job parsing
     openai_api_key: Optional[str] = None
-    openai_model: str = "gpt-4o-mini"  # Model to use for job parsing
+    openai_model: str = "gpt-5-mini"  # Model to use for job parsing
 
     # Optional API keys
     serper_api_key: Optional[str] = None
@@ -64,8 +64,8 @@ class JobScoutConfig:
     log_level: str = "INFO"
 
     # Scoring thresholds
-    min_score_threshold: float = 65.0  # 65% for "apply-ready"
-    fallback_min_score: float = 75.0  # When must-have list is empty
+    min_score_threshold: float = 60.0  # 60% for "apply-ready" (lowered from 65%)
+    fallback_min_score: float = 65.0  # Deprecated: now uses min_score_threshold for all cases
 
     @classmethod
     def from_yaml(cls, path: str) -> "JobScoutConfig":
@@ -82,12 +82,20 @@ class JobScoutConfig:
         schedule = ScheduleConfig(**schedule_data)
         job_prefs = JobPreferences(**job_prefs_data)
 
-        return cls(
+        config = cls(
             email=email,
             schedule=schedule,
             job_preferences=job_prefs,
             **data
         )
+
+        # Override with environment variables if present
+        if os.getenv("JOBSCOUT_MIN_SCORE_THRESHOLD"):
+            config.min_score_threshold = float(os.getenv("JOBSCOUT_MIN_SCORE_THRESHOLD"))
+        if os.getenv("JOBSCOUT_FALLBACK_MIN_SCORE"):
+            config.fallback_min_score = float(os.getenv("JOBSCOUT_FALLBACK_MIN_SCORE"))
+
+        return config
 
     def validate(self) -> List[str]:
         """Validate configuration and return list of errors."""

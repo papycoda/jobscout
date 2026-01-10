@@ -27,7 +27,7 @@ class LLMJobParser:
     """
     Parse job descriptions using multiple LLM providers.
 
-    Supports OpenAI (o3-mini, o1, gpt-4o, gpt-4o-mini) and DeepSeek.
+    Supports OpenAI GPT-5 family (gpt-5.2, gpt-5-mini, gpt-5-nano, gpt-4o legacy) and DeepSeek.
     Falls back to regex-based parsing if LLM fails or is unavailable.
     """
 
@@ -42,7 +42,7 @@ class LLMJobParser:
 
         Args:
             api_key: API key for the LLM provider
-            model: Model ID to use (default: gpt-4o-mini)
+            model: Model ID to use (default: gpt-5-mini)
             fallback_parser: Regex parser to use as fallback
         """
         self.model_id = model

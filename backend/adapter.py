@@ -84,6 +84,7 @@ def _summarize_reasons(reasons: List[str]) -> tuple[str, str]:
         "description too short": "Description too short",
         "posting date missing": "Posting date missing",
         "missing or invalid apply url": "Missing apply URL",
+        "role mismatch": "Role mismatch",
     }
 
     for reason in reasons:
@@ -379,18 +380,32 @@ class JobScoutAdapter:
             return []
 
     def _parse_jobs(self, jobs: List[JobListing]) -> List[ParsedJob]:
-        """Parse job descriptions."""
-        parsed = []
+        """
+        Parse job descriptions using smart hybrid approach.
 
-        for job in jobs:
-            try:
-                parsed_job = self.job_parser.parse(job)
-                parsed.append(parsed_job)
-            except Exception as e:
-                logger.warning(f"Failed to parse job: {e}")
-                continue
-
-        return parsed
+        Uses fast regex for most jobs, with selective LLM enhancement for promising jobs
+        that have poor regex extraction.
+        """
+        try:
+            # Use batch parsing for smart LLM fallback with user skills
+            parsed = self.job_parser.parse_batch(
+                jobs,
+                user_skills=self.resume.skills
+            )
+            logger.info(f"Parsed {len(parsed)} jobs using smart hybrid approach")
+            return parsed
+        except Exception as e:
+            logger.warning(f"Batch parsing failed, falling back to single-job parsing: {e}")
+            # Fallback to single-job parsing
+            parsed = []
+            for job in jobs:
+                try:
+                    parsed_job = self.job_parser.parse(job, user_skills=self.resume.skills)
+                    parsed.append(parsed_job)
+                except Exception as e2:
+                    logger.warning(f"Failed to parse job: {e2}")
+                    continue
+            return parsed
 
     def _apply_filters_and_capture(self, jobs: List[ParsedJob]) -> Dict:
         """Apply hard filters and capture passing/filtered jobs."""
@@ -470,7 +485,8 @@ class JobScoutAdapter:
         filtered = []
 
         for job in jobs:
-            scored = self._score_job(job)
+            # Use the shared JobScorer logic (languages/frameworks + role-aware)
+            scored = self.scorer._score_job(job)
 
             if scored.is_apply_ready:
                 matching.append(scored)
@@ -481,11 +497,20 @@ class JobScoutAdapter:
                 if scored.score < self.config.min_score_threshold:
                     reasons.append(f"Score below threshold ({scored.score:.0f}% < {self.config.min_score_threshold}%)")
 
-                if scored.must_have_coverage < 0.6:
+                # Only check coverage if must-have skills exist
+                if job.must_have_skills and scored.must_have_coverage < 0.6:
                     reasons.append(f"Must-have coverage too low ({scored.must_have_coverage:.0%} < 60%)")
 
-                if not job.must_have_skills and scored.score < self.config.fallback_min_score:
-                    reasons.append(f"No must-have skills and score below fallback ({scored.score:.0f}% < {self.config.fallback_min_score}%)")
+                # Flag explicit role mismatches when both sides are known
+                job_roles = self.scorer._extract_roles(
+                    job.title + " " + job.description,
+                    job.must_have_skills | job.nice_to_have_skills
+                )
+                if job_roles and self.scorer.candidate_roles and not (job_roles & self.scorer.candidate_roles):
+                    reasons.append("Role mismatch (job role vs resume role)")
+
+                # Note: we no longer use fallback_min_score for filtering
+                # Jobs without must-haves are evaluated using the same threshold as normal jobs
 
                 filtered.append({
                     "job": job,
@@ -497,108 +522,6 @@ class JobScoutAdapter:
             "matching": matching,
             "filtered": filtered
         }
-
-    def _score_job(self, job: ParsedJob) -> ScoredJob:
-        """Score a single job (simplified from JobScorer)."""
-        # Calculate coverage
-        coverage, missing, matching = self._calculate_coverage(job)
-
-        # Calculate overlap
-        overlap = self._calculate_overlap(job)
-
-        # Calculate seniority
-        seniority = self._calculate_seniority(job)
-
-        # Weighted score
-        score = (coverage * 60) + (overlap * 25) + (seniority * 15)
-
-        # Empty must-have penalty
-        if not job.must_have_skills:
-            coverage = 0.5
-            score -= 10
-
-        score = max(0, min(100, score))
-
-        # Check if apply-ready
-        is_ready = self._is_apply_ready(score, coverage, job)
-
-        return ScoredJob(
-            job=job,
-            score=score,
-            is_apply_ready=is_ready,
-            must_have_coverage=coverage,
-            stack_overlap=overlap,
-            seniority_alignment=seniority,
-            missing_must_haves=missing,
-            matching_skills=matching
-        )
-
-    def _calculate_coverage(self, job: ParsedJob):
-        """Calculate must-have coverage."""
-        must_haves = job.must_have_skills
-
-        if not must_haves:
-            return 0.0, set(), set()
-
-        all_skills = self.resume.skills.copy()
-        all_skills.update(self.config.job_preferences.preferred_tech_stack)
-
-        matching = set()
-        missing = set()
-
-        for skill in must_haves:
-            if skill in all_skills:
-                matching.add(skill)
-            else:
-                missing.add(skill)
-
-        coverage = len(matching) / len(must_haves)
-        return coverage, missing, matching
-
-    def _calculate_overlap(self, job: ParsedJob) -> float:
-        """Calculate stack overlap."""
-        job_skills = job.must_have_skills | job.nice_to_have_skills
-
-        if not job_skills:
-            return 0.5
-
-        all_skills = self.resume.skills.copy()
-        all_skills.update(self.config.job_preferences.preferred_tech_stack)
-
-        overlap = job_skills & all_skills
-        return len(overlap) / len(job_skills)
-
-    def _calculate_seniority(self, job: ParsedJob) -> float:
-        """Calculate seniority alignment."""
-        if job.seniority_level == "unknown" or self.resume.seniority == "unknown":
-            return 0.7
-
-        if job.seniority_level == self.resume.seniority:
-            return 1.0
-
-        # Simple alignment logic
-        if job.seniority_level == "senior" and self.resume.seniority in ["junior", "mid"]:
-            if job.min_years_experience and job.min_years_experience >= 8:
-                return 0.3 if self.resume.years_experience < 5 else 0.5
-            return 0.6
-
-        if job.seniority_level == "junior" and self.resume.seniority == "senior":
-            return 0.6
-
-        if job.seniority_level == "mid" and self.resume.seniority == "junior":
-            return 0.5
-
-        if self.resume.seniority == "senior":
-            return 0.9
-
-        return 0.7
-
-    def _is_apply_ready(self, score: float, coverage: float, job: ParsedJob) -> bool:
-        """Check if job is apply-ready."""
-        if not job.must_have_skills:
-            return score >= self.config.fallback_min_score
-
-        return score >= self.config.min_score_threshold and coverage >= 0.6
 
     def _deduplicate_jobs(self, scored_jobs: List[ScoredJob]) -> List[ScoredJob]:
         """Deduplicate jobs."""
