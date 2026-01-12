@@ -159,7 +159,14 @@ class JobParser:
                             "apply_url": job.apply_url,
                             "source": job.source,
                         }
-                        llm_result = self.llm_parser.parse(job.description, job_metadata)
+                        # Pass user context to LLM parser
+                        llm_result = self.llm_parser.parse(
+                            job.description,
+                            job_metadata,
+                            user_skills=user_skills,
+                            user_seniority=getattr(self, '_user_seniority', 'unknown'),
+                            user_years_experience=getattr(self, '_user_years_experience', 0.0)
+                        )
                         # Mark as LLM-enhanced for debugging
                         llm_result._parsing_method = "llm_fallback"
                         return llm_result
@@ -223,7 +230,14 @@ class JobParser:
                     "apply_url": job.apply_url,
                     "source": job.source,
                 }
-                llm_result = self.llm_parser.parse(job.description, job_metadata)
+                # Pass user context to LLM parser
+                llm_result = self.llm_parser.parse(
+                    job.description,
+                    job_metadata,
+                    user_skills=user_skills,
+                    user_seniority=getattr(self, '_user_seniority', 'unknown'),
+                    user_years_experience=getattr(self, '_user_years_experience', 0.0)
+                )
                 llm_result._parsing_method = "llm_fallback"
                 return job, llm_result
             except Exception as e:
