@@ -1,4 +1,4 @@
-"""Boolean search via Serper (Google) for Greenhouse, Lever, and Breezy HR postings."""
+"""Boolean search via Serper (Google) for Greenhouse, Lever, Breezy HR, and Ashby HQ postings."""
 
 import json
 import logging
@@ -19,9 +19,11 @@ _DEFAULT_TIMEOUT = 10
 _GREENHOUSE_DOMAIN = "boards.greenhouse.io"
 _LEVER_DOMAIN = "jobs.lever.co"
 _BREEZYHR_DOMAIN = "jobs.breezy.hr"
+_ASHBYHQ_DOMAIN = "jobs.ashbyhq.com"
 _GREENHOUSE_JOB_RE = re.compile(r"https?://boards\.greenhouse\.io/[^/]+/jobs/\d+")
 _LEVER_JOB_RE = re.compile(r"https?://jobs\.lever\.co/[^/]+/[^/?#]+")
 _BREEZYHR_JOB_RE = re.compile(r"https?://jobs\.breezy\.hr/[^/]+/[^/?#]+")
+_ASHBYHQ_JOB_RE = re.compile(r"https?://jobs\.ashbyhq\.com/[^/]+/[^/?#]+")
 
 
 class BooleanSearchSource(JobSource):
@@ -32,6 +34,7 @@ class BooleanSearchSource(JobSource):
     - Greenhouse (boards.greenhouse.io)
     - Lever (jobs.lever.co)
     - Breezy HR (jobs.breezy.hr)
+    - Ashby HQ (jobs.ashbyhq.com)
 
     Conservative approach: Only fetch URLs returned by search,
     never crawl company pages directly.
@@ -102,9 +105,12 @@ class BooleanSearchSource(JobSource):
         return results
 
     def _build_boolean_queries(self) -> List[str]:
-        """Build Boolean search queries from resume data."""
-        queries = []
+        """
+        Build Boolean search queries from resume data.
 
+        Creates a single query searching all supported domains at once,
+        like: site:(boards.greenhouse.io OR jobs.lever.co OR jobs.breezy.hr OR jobs.ashbyhq.com)
+        """
         # Build skill OR clause
         skill_terms = sorted(self.resume_skills)[:8]  # Limit to top 8
         if not skill_terms:
@@ -120,21 +126,24 @@ class BooleanSearchSource(JobSource):
         exclude_clause = self._build_exclude_clause()
         after_clause = self._build_after_clause()
 
-        for domain in [_GREENHOUSE_DOMAIN, _LEVER_DOMAIN, _BREEZYHR_DOMAIN]:
-            parts = [
-                f"({role_clause})",
-                f"({skill_clause})",
-                f"site:{domain}"
-            ]
-            if location_clause:
-                parts.append(location_clause)
-            if after_clause:
-                parts.append(after_clause)
-            if exclude_clause:
-                parts.append(exclude_clause)
-            queries.append(" ".join(parts))
+        # Build single query with all domains
+        # Format: site:(domain1 OR domain2 OR domain3)
+        all_domains = [_GREENHOUSE_DOMAIN, _LEVER_DOMAIN, _BREEZYHR_DOMAIN, _ASHBYHQ_DOMAIN]
+        domain_clause = "site:(" + " OR ".join(all_domains) + ")"
 
-        return queries
+        parts = [
+            f"({role_clause})",
+            f"({skill_clause})",
+            domain_clause
+        ]
+        if location_clause:
+            parts.append(location_clause)
+        if after_clause:
+            parts.append(after_clause)
+        if exclude_clause:
+            parts.append(exclude_clause)
+
+        return [" ".join(parts)]  # Return single query
 
     def _serper_search(self, query: str, limit: int) -> List[Dict]:
         payload = {
@@ -170,6 +179,8 @@ class BooleanSearchSource(JobSource):
             return bool(_LEVER_JOB_RE.search(link))
         if _BREEZYHR_DOMAIN in link:
             return bool(_BREEZYHR_JOB_RE.search(link))
+        if _ASHBYHQ_DOMAIN in link:
+            return bool(_ASHBYHQ_JOB_RE.search(link))
         return False
 
     def _fetch_and_parse_job(self, link: str, item: Dict) -> Optional[JobListing]:
@@ -185,6 +196,8 @@ class BooleanSearchSource(JobSource):
             job = self._parse_lever_job(html, link, result_date, item)
         elif _BREEZYHR_DOMAIN in link:
             job = self._parse_breezy_job(html, link, result_date, item)
+        elif _ASHBYHQ_DOMAIN in link:
+            job = self._parse_ashby_job(html, link, result_date, item)
         else:
             return None
 
@@ -310,6 +323,54 @@ class BooleanSearchSource(JobSource):
             posted_date=posted_date
         )
 
+    def _parse_ashby_job(
+        self,
+        html: str,
+        url: str,
+        posted_date: Optional[datetime],
+        search_item: Optional[Dict]
+    ) -> JobListing:
+        """Parse job details from Ashby HQ page."""
+        soup = BeautifulSoup(html, "lxml")
+
+        # Extract basic info - Ashby HQ uses different classes
+        title = soup.find("h1")
+        if title:
+            title = title.text.strip()
+        if not title:
+            title = "Unknown Title"
+
+        company = self._extract_company_name(soup, url, search_item)
+
+        # Extract location - Ashby HQ specific selectors
+        location = ""
+        location_el = soup.find("div", class_="location")
+        if not location_el:
+            # Try to find location in other common patterns
+            location_el = soup.find(string=re.compile(r"remote|location|office", re.I))
+        if location_el and location_el.parent:
+            location = location_el.parent.get_text(strip=True)
+        if not location:
+            location = self._default_location()
+
+        # Extract description
+        content_div = soup.find("div", class_="description")
+        if not content_div:
+            content_div = soup.find("div", class_="job-description")
+        if not content_div:
+            content_div = soup.find("article")
+        description = content_div.get_text("\n", strip=True) if content_div else ""
+
+        return JobListing(
+            title=title,
+            company=company,
+            location=location,
+            description=description,
+            apply_url=url,
+            source="Ashby HQ",
+            posted_date=posted_date
+        )
+
     def _extract_company_name(
         self,
         soup: BeautifulSoup,
@@ -376,8 +437,8 @@ class BooleanSearchSource(JobSource):
     def _company_from_title(self, title: str) -> str:
         if not title:
             return ""
-        # Remove platform suffixes like " - Greenhouse", " | Lever", " - Breezy HR", etc.
-        cleaned = re.sub(r"\s*[-|]\s*(Greenhouse|Lever|Breezy(\s+HR)?)(\s+Jobs|\s+Careers)?$", "", title, flags=re.I).strip()
+        # Remove platform suffixes like " - Greenhouse", " | Lever", " - Breezy HR", " - Ashby HQ", etc.
+        cleaned = re.sub(r"\s*[-|]\s*(Greenhouse|Lever|Breezy(\s+HR)?|Ashby(\s+HQ)?)(\s+Jobs|\s+Careers)?$", "", title, flags=re.I).strip()
 
         at_match = re.split(r"\s+at\s+", cleaned, flags=re.I)
         if len(at_match) > 1:
@@ -409,9 +470,11 @@ class BooleanSearchSource(JobSource):
         if not company_match:
             company_match = re.search(r"jobs\.breezy\.hr/([^/]+)/", url)
         if not company_match:
+            company_match = re.search(r"jobs\.ashbyhq\.com/([^/]+)/", url)
+        if not company_match:
             return ""
         company = company_match.group(1)
-        company = company.replace("greenhouse", "").replace("lever", "").replace("breezy", "")
+        company = company.replace("greenhouse", "").replace("lever", "").replace("breezy", "").replace("ashby", "")
         return company.replace("-", " ").strip().title()
 
     def _extract_greenhouse_location(self, soup: BeautifulSoup) -> str:

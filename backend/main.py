@@ -357,6 +357,7 @@ async def get_config():
             default_boards.append("greenhouse")
         if os.getenv("LEVER_COMPANIES"):
             default_boards.append("lever")
+        # Boolean search is now enabled by default when SERPER_API_KEY is set
         if os.getenv("SERPER_API_KEY"):
             default_boards.append("boolean")
 
@@ -373,7 +374,7 @@ async def get_config():
         return {
             "config": default_config,
             "description": "Default configuration. Override by sending preferences in /api/search request.",
-            "note": "Job boards include: RemoteOK, We Work Remotely, Remotive, Greenhouse, Lever" + (", Boolean (if SERPER_API_KEY set)" if os.getenv("SERPER_API_KEY") else "")
+            "note": "Job boards include: RemoteOK, We Work Remotely, Remotive, Greenhouse, Lever" + (", Boolean search with Greenhouse/Lever/Breezy HR/Ashby HQ (enabled by default when SERPER_API_KEY set)" if os.getenv("SERPER_API_KEY") else "")
         }
 
     except Exception as e:
@@ -547,6 +548,7 @@ async def search_jobs(request: dict):
             default_boards.append("greenhouse")
         if os.getenv("LEVER_COMPANIES"):
             default_boards.append("lever")
+        # Boolean search is now enabled by default when SERPER_API_KEY is set
         if os.getenv("SERPER_API_KEY"):
             default_boards.append("boolean")
 
