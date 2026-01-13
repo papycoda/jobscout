@@ -121,6 +121,8 @@ class JobScorer:
 
     def _score_job(self, job: ParsedJob) -> ScoredJob:
         """Score a single job."""
+        job_roles = self._get_job_roles(job)
+
         # 1. Calculate must-have coverage (55% weight)
         coverage, missing_must_haves, matching_skills = self._calculate_must_have_coverage(job)
 
@@ -131,7 +133,7 @@ class JobScorer:
         seniority = self._calculate_seniority_alignment(job)
 
         # 4. Calculate role alignment (10% weight) to keep role intent in view
-        role_alignment = self._calculate_role_alignment(job)
+        role_alignment = self._calculate_role_alignment(job_roles)
 
         # Apply weights
         score = (
@@ -156,7 +158,6 @@ class JobScorer:
         score = max(0, min(100, score))
 
         # Determine if apply-ready
-        job_roles = self._extract_roles(job.title + " " + job.description, job.must_have_skills | job.nice_to_have_skills)
         is_apply_ready = self._is_apply_ready(score, coverage, job, job_roles)
 
         return ScoredJob(
@@ -329,10 +330,22 @@ class JobScorer:
 
         return roles
 
-    def _calculate_role_alignment(self, job: ParsedJob) -> float:
-        """Score how well the job's role focus matches the candidate's intent."""
-        job_roles = self._extract_roles(job.title + " " + job.description, job.must_have_skills | job.nice_to_have_skills)
+    def _get_job_roles(self, job: ParsedJob) -> Set[str]:
+        """Combine explicit role keywords, inferred job_roles, and text extraction."""
+        roles = set()
 
+        if getattr(job, "role_keywords", None):
+            roles.update({rk.lower() for rk in job.role_keywords})
+        if getattr(job, "job_roles", None):
+            roles.update(job.job_roles)
+
+        if roles:
+            return roles
+
+        return self._extract_roles(job.title + " " + job.description, job.must_have_skills | job.nice_to_have_skills)
+
+    def _calculate_role_alignment(self, job_roles: Set[str]) -> float:
+        """Score how well the job's role focus matches the candidate's intent."""
         if not job_roles or not self.candidate_roles:
             return 0.6  # Neutral when unclear
 

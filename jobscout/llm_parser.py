@@ -4,6 +4,8 @@ import json
 import logging
 from typing import Optional, Set, Dict, Any
 from dataclasses import dataclass
+from types import SimpleNamespace
+from datetime import datetime
 
 from .llm_providers import MultiProviderLLMClient, DEFAULT_MODEL, get_model
 from .job_parser import ParsedJob, JobParser
@@ -38,6 +40,7 @@ class LLMParseResult:
     min_years_experience: Optional[float]
     deal_breakers: list[str]
     confidence: float
+    role_keywords: list[str]
 
 
 class LLMJobParser:
@@ -118,6 +121,9 @@ class LLMJobParser:
                 nice_to_have_skills=llm_result.nice_to_have_skills,
                 min_years_experience=llm_result.min_years_experience,
                 seniority_level=llm_result.seniority_level,
+                job_roles=self._infer_job_roles(job_description, job_metadata),
+                posted_date=self._normalize_posted_date(job_metadata),
+                role_keywords=set(llm_result.role_keywords),
             )
 
         except Exception as e:
@@ -148,20 +154,17 @@ class LLMJobParser:
 - Company: {job_metadata.get('company', 'Unknown') if job_metadata else 'Unknown'}
 - Location: {job_metadata.get('location', 'Unknown') if job_metadata else 'Unknown'}"""
 
-        system_prompt = """You are an expert job matcher and career advisor. Your task is to analyze job postings and extract requirements in a way that helps match candidates to jobs.
+        system_prompt = """You are an expert job matcher. Extract only the signals that matter for fit and search.
 
-**Your goal**: Extract the skills and requirements that ACTUALLY MATTER for determining if a candidate is a good fit.
+Rules (apply in order):
+1) Use canonical skills only. Map variants to canonical list below; if no clear mapping, drop it.
+2) Separate must-have vs nice-to-have using explicit language in the posting.
+3) Ignore soft skills and generic terms (e.g., "communication", "self-starter", "database" without a specific technology).
+4) Detect deal-breakers (visa/clearance/relocation/onsite-only/geography/certifications).
+5) Recommend 3-5 short role keywords (2-4 words) aligned to the posting (e.g., "backend engineer", "fullstack engineer", "data engineer", "devops engineer"). Lowercase.
+6) Confidence: 1.0 = explicit lists; 0.8 = mostly clear; 0.6 = vague; 0.4 = marketing fluff. One decimal place.
 
-**Key Principles**:
-1. **Be Specific**: Extract concrete technologies (e.g., "postgresql" not "databases", "react" not "javascript frameworks")
-2. **Use Canonical Names**: Map variations to standard names (e.g., "node.js" → "javascript", "postgres" → "postgresql")
-3. **Distinguish Must-Have vs Nice-to-Have**:
-   - Must-have: Explicitly required skills (e.g., "required", "must have", "you need", "we're looking for")
-   - Nice-to-have: Preferred but optional (e.g., "nice to have", "bonus", "plus", "preferred")
-4. **Consider Context**: A skill mentioned once in a 20-page description is less important than one mentioned 5 times
-5. **Look for Deal-Breakers**: Requirements that would disqualify a candidate (visa, relocation, specific certifications)
-
-**Canonical Skills Reference** (use these exact names):
+Canonical Skills (exact names):
 Languages: python, javascript, typescript, java, go, c#, c++, ruby, php, rust, swift, kotlin, scala
 Frameworks: django, fastapi, flask, spring, express, nestjs, react, vue, angular, svelte
 Infrastructure: docker, kubernetes, aws, gcp, azure, terraform, ansible, chef, puppet
@@ -169,66 +172,24 @@ Databases: postgresql, mysql, sqlite, mongodb, redis, elasticsearch, dynamodb, c
 Messaging: kafka, rabbitmq, sqs, pubsub
 Testing/CI: pytest, unittest, junit, jest, mocha, github_actions, gitlab_ci, jenkins, travis, circleci
 
-**Seniority Levels**:
-- "junior": 0-2 years, titles like "Junior", "Entry Level", "Associate"
-- "mid": 3-5 years, titles like "Mid-Level", "Intermediate", "Software Engineer"
-- "senior": 6+ years, titles like "Senior", "Lead", "Principal", "Staff"
+Seniority levels: junior (0-2y), mid (3-5y), senior (6+y; titles with Senior/Lead/Principal/Staff).
 
-**Deal-Breakers** (hard requirements that disqualify):
-- Visa sponsorship required/not provided
-- Onsite-only requirements
-- Specific certifications (e.g., "must have AWS Solutions Architect Professional")
-- Industry-specific requirements (e.g., "healthcare experience required")
-- Geographic restrictions
-
-**Confidence Scoring**:
-- 1.0: All requirements clearly stated, explicit must-have list
-- 0.8: Most requirements clear, some ambiguity
-- 0.6: Requirements vague or unclear
-- 0.4: Very poor quality job description
-
-Return ONLY valid JSON. No markdown, no explanations."""
+Return ONLY raw JSON, no code fences, no markdown."""
 
         # Few-shot examples to guide extraction
-        examples = """**EXAMPLE 1:**
+        examples = """Example:
 Job: "Senior Python Engineer - Remote"
-Description: "We're looking for a Senior Python Engineer with 5+ years of experience. You must have strong Python skills, Django experience, and PostgreSQL knowledge. AWS experience is a plus. You should be familiar with Docker and Kubernetes for deployment. Required: 8+ years total experience."
+Description: "We're looking for a Senior Python Engineer with 8+ years experience. Required: Python, Django, PostgreSQL. Deploy with Docker/Kubernetes. AWS is a plus. Remote, but must be US-based; no visa sponsorship."
 
 Result:
 {
+    "schema_version": "1.1",
     "must_have_skills": ["python", "django", "postgresql", "docker", "kubernetes"],
     "nice_to_have_skills": ["aws"],
     "seniority_level": "senior",
     "min_years_experience": 8.0,
-    "deal_breakers": [],
-    "confidence": 1.0
-}
-
-**EXAMPLE 2:**
-Job: "Full Stack Developer"
-Description: "Join our team as a Full Stack Developer! We use React, Node.js, and MongoDB. Experience with TypeScript is preferred but not required. You should know SQL and have worked with cloud platforms before. Nice to have: GraphQL, Redis."
-
-Result:
-{
-    "must_have_skills": ["react", "javascript", "mongodb", "postgresql"],
-    "nice_to_have_skills": ["typescript", "graphql", "redis"],
-    "seniority_level": "unknown",
-    "min_years_experience": null,
-    "deal_breakers": [],
-    "confidence": 0.8
-}
-
-**EXAMPLE 3:**
-Job: "Backend Engineer (Python/Django)"
-Description: "Must be authorized to work in US without sponsorship. Required: 3+ years Python, Django REST Framework, PostgreSQL. Bonus points for: Redis, Celery, Docker. This is an onsite role in San Francisco - no remote."
-
-Result:
-{
-    "must_have_skills": ["python", "django", "postgresql"],
-    "nice_to_have_skills": ["redis", "docker"],
-    "seniority_level": "mid",
-    "min_years_experience": 3.0,
-    "deal_breakers": ["requires US work authorization (no sponsorship)", "onsite only (San Francisco)"],
+    "deal_breakers": ["no visa sponsorship", "requires US-based candidates"],
+    "role_keywords": ["backend engineer", "senior python engineer"],
     "confidence": 1.0
 }
 """
@@ -239,26 +200,27 @@ Result:
 
 {examples}
 
-**YOUR TASK:**
-Analyze the job description below and extract the requirements.
+**YOUR TASK:** Analyze the job description below and extract the requirements.
 
-**IMPORTANT**:
-- Map skills to canonical names from the reference list above
-- Use lowercase for all skill names
-- Distinguish between must-have and nice-to-have based on wording
-- Extract deal-breakers that would disqualify the candidate
-- Set confidence based on how clearly requirements are stated
+- Use only canonical skills. If a mentioned tech has no canonical match, omit it.
+- Lowercase everything.
+- Distinguish must-have vs nice-to-have from explicit wording.
+- Extract deal-breakers that would disqualify candidates.
+- Recommend 3-5 role keywords aligned to this posting.
+- Return valid JSON only (no code fences). If unsure, return empty arrays and "unknown" seniority.
 
-Job Description:
+Job Description (may be long):
 {job_description}
 
 Return JSON in this exact format:
 {{
+    "schema_version": "1.1",
     "must_have_skills": ["skill1", "skill2", "..."],
     "nice_to_have_skills": ["skill1", "skill2", "..."],
     "seniority_level": "junior|mid|senior|unknown",
     "min_years_experience": <number or null>,
     "deal_breakers": ["dealbreaker1", "..."],
+    "role_keywords": ["role1", "role2", "..."],
     "confidence": <0.0 to 1.0>
 }}"""
 
@@ -268,7 +230,7 @@ Return JSON in this exact format:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.0 if self.model_id != "gpt-4o-mini" else 1.0,  # Some models only support 1.0
+                temperature=1.0,  # This model only supports temperature=1.0
                 max_tokens=1500,
             )
 
@@ -287,7 +249,8 @@ Return JSON in this exact format:
                 seniority_level=result.get("seniority_level", "unknown").lower(),
                 min_years_experience=result.get("min_years_experience"),
                 deal_breakers=result.get("deal_breakers", []),
-                confidence=float(result.get("confidence", 0.8))
+                confidence=round(float(result.get("confidence", 0.8)), 1),
+                role_keywords=[rk.strip().lower() for rk in result.get("role_keywords", []) if isinstance(rk, str) and rk.strip()]
             )
 
         except json.JSONDecodeError as e:
@@ -372,3 +335,32 @@ Return JSON:
         except Exception as e:
             logger.warning(f"Deal-breaker check failed: {e}")
             return []
+
+    def _infer_job_roles(self, job_description: str, job_metadata: Optional[Dict]) -> Set[str]:
+        """
+        Reuse the regex role inference to keep downstream filters/scoring consistent.
+        """
+        if not self.fallback_parser:
+            return set()
+
+        stub_job = SimpleNamespace(
+            title=job_metadata.get("title", "Unknown") if job_metadata else "Unknown",
+            description=job_description,
+        )
+        try:
+            return self.fallback_parser._extract_job_roles(stub_job)
+        except Exception as exc:
+            logger.debug(f"Could not infer job roles from LLM parse: {exc}")
+            return set()
+
+    def _normalize_posted_date(self, job_metadata: Optional[Dict]) -> Optional[str]:
+        """Return posted_date in ISO format if present in metadata."""
+        if not job_metadata:
+            return None
+
+        posted = job_metadata.get("posted_date")
+        if isinstance(posted, datetime):
+            return posted.isoformat()
+        if isinstance(posted, str):
+            return posted
+        return None

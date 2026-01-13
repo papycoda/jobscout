@@ -52,7 +52,7 @@ class JobScoutConfig:
     job_preferences: JobPreferences = field(default_factory=JobPreferences)
 
     # LLM Parser settings
-    use_llm_parser: bool = False  # Enable LLM-enhanced job parsing
+    use_llm_parser: bool = True  # Enable LLM-enhanced job parsing by default
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-5-mini"  # Model to use for job parsing
 

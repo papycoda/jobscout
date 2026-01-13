@@ -22,6 +22,7 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from jobscout.config import JobScoutConfig
+from jobscout.role_recommender import RoleRecommender
 from backend.storage import Storage
 from backend.adapter import JobScoutAdapter, send_email_digest_from_jobs
 from backend.models import *
@@ -541,6 +542,9 @@ async def search_jobs(request: dict):
         location_pref = preferences.get("location_preference", "remote")
         max_age = preferences.get("max_job_age_days", 7)
         min_threshold = preferences.get("min_score_threshold", 60.0)
+        llm_pref = preferences.get("use_llm_parsing")
+        has_api_key = bool(os.getenv("OPENAI_API_KEY"))
+        use_llm = (has_api_key and (llm_pref is None or bool(llm_pref)))
 
         # Default job boards (only include boards that can return data without extra config)
         default_boards = ["remoteok", "weworkremotely", "remotive"]
@@ -576,6 +580,60 @@ async def search_jobs(request: dict):
             years_experience=float(user_years),
             role_keywords=resume_role_keywords
         )
+
+        # If the client didn't supply roles, use AI to recommend some for search queries
+        role_keywords_for_search = list(resume_role_keywords) or ["software engineer"]
+        if use_llm and has_api_key and not resume_role_keywords:
+            try:
+                advisor = RoleRecommender(
+                    api_key=os.getenv("OPENAI_API_KEY"),
+                    model=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
+                )
+                recommended_roles = advisor.recommend_roles(resume)
+                if recommended_roles:
+                    role_keywords_for_search = recommended_roles
+                    logger.info(f"Using AI-recommended role keywords: {role_keywords_for_search}")
+            except Exception as exc:
+                logger.warning(f"Role recommendation failed; using fallback keywords: {exc}")
+
+        # Coarse role intent for filtering (backend/frontend/fullstack/etc.)
+        def _infer_user_roles(role_keywords: list[str], skills: set) -> set:
+            user_roles = set()
+
+            for keyword in role_keywords or []:
+                kw = keyword.lower()
+                if 'backend' in kw:
+                    user_roles.add('backend')
+                if 'frontend' in kw or 'front-end' in kw:
+                    user_roles.add('frontend')
+                if 'fullstack' in kw or 'full-stack' in kw or 'full stack' in kw:
+                    user_roles.add('fullstack')
+                if 'devops' in kw or 'sre' in kw or 'site reliability' in kw:
+                    user_roles.add('devops')
+                if 'data' in kw or 'machine learning' in kw or 'ml ' in kw or kw.endswith(' ml'):
+                    user_roles.add('data')
+                if 'mobile' in kw or 'ios' in kw or 'android' in kw:
+                    user_roles.add('mobile')
+
+            if user_roles:
+                return user_roles
+
+            backend_indicators = {'python', 'django', 'fastapi', 'flask', 'java', 'go', 'ruby', 'php', 'rust'}
+            frontend_indicators = {'react', 'vue', 'angular', 'javascript', 'typescript', 'css', 'html'}
+
+            backend_count = sum(1 for skill in skills if skill in backend_indicators)
+            frontend_count = sum(1 for skill in skills if skill in frontend_indicators)
+
+            if backend_count >= 3 and backend_count > frontend_count * 3:
+                user_roles.add('backend')
+            elif frontend_count >= 3 and frontend_count > backend_count * 3:
+                user_roles.add('frontend')
+            elif backend_count >= 1 and frontend_count >= 1:
+                user_roles.add('fullstack')
+
+            return user_roles if user_roles else {'unknown'}
+
+        user_role_categories = _infer_user_roles(role_keywords_for_search, user_skills)
 
         # Fetch jobs from selected sources
         logger.info(f"Fetching jobs from: {', '.join(job_boards)}")
@@ -616,7 +674,7 @@ async def search_jobs(request: dict):
                     from jobscout.job_sources.boolean_search import BooleanSearchSource
                     boolean_source = BooleanSearchSource(
                         resume_skills=user_skills,
-                        role_keywords=resume_role_keywords,
+                        role_keywords=role_keywords_for_search,
                         seniority=user_seniority,
                         location_preference=location_pref,
                         max_job_age_days=max_age,
@@ -637,9 +695,6 @@ async def search_jobs(request: dict):
         parsed_jobs = []
 
         # Create parser with optional LLM support (default to on when API key present)
-        llm_pref = preferences.get("use_llm_parsing")
-        has_api_key = bool(os.getenv("OPENAI_API_KEY"))
-        use_llm = (has_api_key and (llm_pref is None or bool(llm_pref)))
         parser_config = JobScoutConfig(
             resume_path="",
             use_llm_parser=use_llm,
@@ -647,6 +702,8 @@ async def search_jobs(request: dict):
             openai_model=os.getenv("OPENAI_MODEL", "gpt-5-mini")
         )
         parser = JobParser(parser_config)
+        parser._user_seniority = user_seniority
+        parser._user_years_experience = float(user_years)
 
         # Use smart hybrid parsing (fast regex + selective LLM)
         if use_llm:
@@ -682,7 +739,10 @@ async def search_jobs(request: dict):
         )
 
         scorer = JobScorer(resume, temp_config, preferred_stack)
-        filters = HardExclusionFilters(temp_config, user_roles=set(resume_role_keywords) if resume_role_keywords else None)
+        filters = HardExclusionFilters(
+            temp_config,
+            user_roles=user_role_categories if user_role_categories else None
+        )
 
         # Process each job
         matched_jobs = []

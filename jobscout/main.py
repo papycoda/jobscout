@@ -14,6 +14,7 @@ from .job_parser import JobParser
 from .filters import HardExclusionFilters
 from .scoring import JobScorer
 from .emailer import EmailDelivery
+from .role_recommender import RoleRecommender
 
 
 # Configure logging
@@ -36,7 +37,6 @@ class JobScout:
         # Initialize components
         self.resume_parser = ResumeParser()
         self.job_parser = JobParser(config)  # Pass config for LLM support
-        self.filters = HardExclusionFilters(config)
         self.emailer = EmailDelivery(config)
 
         # Parse resume
@@ -49,6 +49,35 @@ class JobScout:
         # Build preferred stack
         preferred_stack = set(config.job_preferences.preferred_tech_stack)
         logger.info(f"Preferred stack: {preferred_stack}")
+
+        # Share user context with the job parser so LLM fallback has real signals
+        self.job_parser._user_seniority = self.resume.seniority
+        self.job_parser._user_years_experience = self.resume.years_experience
+
+        # Recommend role keywords (fallback to resume-extracted keywords)
+        self.role_keywords_for_search = list(self.resume.role_keywords) or ["software engineer"]
+
+        if self.config.use_llm_parser and self.config.openai_api_key:
+            try:
+                advisor = RoleRecommender(
+                    api_key=self.config.openai_api_key,
+                    model=self.config.openai_model,
+                )
+                recommended_roles = advisor.recommend_roles(self.resume)
+                if recommended_roles:
+                    self.role_keywords_for_search = recommended_roles
+                    logger.info(f"Using AI-recommended role keywords: {self.role_keywords_for_search}")
+            except Exception as e:
+                logger.warning(f"Role recommendation failed; using resume keywords: {e}")
+
+        # Derive coarse role intent for filtering (backend/frontend/etc.)
+        user_role_categories = self._infer_user_roles(self.role_keywords_for_search, self.resume.skills)
+
+        # Initialize filters with derived user roles to avoid re-parsing the resume
+        self.filters = HardExclusionFilters(config, user_roles=user_role_categories)
+
+        # Keep around preferred stack for scoring
+        self.preferred_stack = preferred_stack
 
         # Initialize scorer
         self.scorer = JobScorer(self.resume, config, preferred_stack)
@@ -162,7 +191,7 @@ class JobScout:
         elif board_lower == "boolean":
             source = BooleanSearchSource(
                 resume_skills=self.resume.skills,
-                role_keywords=self.resume.role_keywords,
+                role_keywords=self.role_keywords_for_search,
                 seniority=self.resume.seniority,
                 location_preference=self.config.job_preferences.location_preference,
                 max_job_age_days=self.config.job_preferences.max_job_age_days,
@@ -176,11 +205,15 @@ class JobScout:
 
     def _parse_jobs(self, jobs: List[JobListing]) -> List:
         """Parse job descriptions."""
-        parsed_jobs = []
+        try:
+            return self.job_parser.parse_batch(jobs, user_skills=self.resume.skills)
+        except Exception as e:
+            logger.warning(f"Batch parsing failed, falling back to single-job parsing: {e}")
 
+        parsed_jobs = []
         for job in jobs:
             try:
-                parsed = self.job_parser.parse(job)
+                parsed = self.job_parser.parse(job, user_skills=self.resume.skills)
                 parsed_jobs.append(parsed)
             except Exception as e:
                 logger.warning(f"Failed to parse job {job.title} at {job.company}: {e}")
@@ -201,6 +234,44 @@ class JobScout:
                 unique_jobs.append(scored_job)
 
         return unique_jobs
+
+    @staticmethod
+    def _infer_user_roles(role_keywords: List[str], skills: set) -> set:
+        """Infer coarse role categories from role keywords and skills."""
+        user_roles = set()
+
+        for keyword in role_keywords or []:
+            kw = keyword.lower()
+            if 'backend' in kw:
+                user_roles.add('backend')
+            if 'frontend' in kw or 'front-end' in kw:
+                user_roles.add('frontend')
+            if 'fullstack' in kw or 'full-stack' in kw or 'full stack' in kw:
+                user_roles.add('fullstack')
+            if 'devops' in kw or 'sre' in kw or 'site reliability' in kw:
+                user_roles.add('devops')
+            if 'data' in kw or 'machine learning' in kw or 'ml ' in kw or kw.endswith(' ml'):
+                user_roles.add('data')
+            if 'mobile' in kw or 'ios' in kw or 'android' in kw:
+                user_roles.add('mobile')
+
+        if user_roles:
+            return user_roles
+
+        backend_indicators = {'python', 'django', 'fastapi', 'flask', 'java', 'go', 'ruby', 'php', 'rust'}
+        frontend_indicators = {'react', 'vue', 'angular', 'javascript', 'typescript', 'css', 'html'}
+
+        backend_count = sum(1 for skill in skills if skill in backend_indicators)
+        frontend_count = sum(1 for skill in skills if skill in frontend_indicators)
+
+        if backend_count >= 3 and backend_count > frontend_count * 3:
+            user_roles.add('backend')
+        elif frontend_count >= 3 and frontend_count > backend_count * 3:
+            user_roles.add('frontend')
+        elif backend_count >= 1 and frontend_count >= 1:
+            user_roles.add('fullstack')
+
+        return user_roles if user_roles else {'unknown'}
 
 
 def run_jobscout(config_path: str = "config.yaml"):

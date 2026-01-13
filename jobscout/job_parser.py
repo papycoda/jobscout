@@ -34,6 +34,7 @@ class ParsedJob:
 
     # Role categories (for filtering)
     job_roles: Set[str] = field(default_factory=set)
+    role_keywords: Set[str] = field(default_factory=set)
 
     # Metadata
     posted_date: Optional[str] = None
