@@ -17,6 +17,13 @@ except ImportError:
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from backend.security import (
+    SecurityHeadersMiddleware,
+    APIKeyAuthMiddleware,
+    RateLimitMiddleware,
+    SecurityValidator,
+    SecurityLogger
+)
 
 # Add parent directory to path to import jobscout
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -44,13 +51,27 @@ app = FastAPI(
 )
 
 
-# CORS configuration
+# Security middleware (added before CORS for proper execution order)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(APIKeyAuthMiddleware)
+app.add_middleware(RateLimitMiddleware)
+
+# CORS configuration (with improved security)
 cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:8080,https://jobscoutpro.netlify.app").split(",")
+# Validate and sanitize CORS origins
+valid_origins = []
+for origin in cors_origins:
+    origin = origin.strip()
+    if origin and origin.startswith(('http://', 'https://')):
+        valid_origins.append(origin)
+    else:
+        logger.warning(f"Invalid CORS origin in config: {origin}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
+    allow_origins=valid_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],  # Restrict methods
     allow_headers=["*"],
 )
 
@@ -269,18 +290,42 @@ async def upload_resume(file: UploadFile = File(...)):
     Returns structured profile for use in /api/search.
     """
     try:
-        # Validate file type
-        allowed_extensions = {".pdf", ".docx", ".txt"}
-        file_ext = Path(file.filename).suffix.lower()
-
-        if file_ext not in allowed_extensions:
+        # Enhanced file validation with security checks
+        if not file.filename:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"
+                detail="No filename provided"
+            )
+
+        # Validate file extension and size
+        is_valid, error_msg = SecurityValidator.validate_file_upload(
+            file.filename,
+            file.size or 0  # size might be None
+        )
+
+        if not is_valid:
+            SecurityLogger.log_security_event(
+                "file_upload_validation_failed",
+                {"filename": file.filename, "error": error_msg}
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=error_msg
             )
 
         # Read file content into memory (no disk write)
         content = await file.read()
+
+        # Double-check actual file size
+        if len(content) > SecurityValidator.MAX_FILE_SIZE:
+            SecurityLogger.log_security_event(
+                "file_size_exceeded",
+                {"filename": file.filename, "size": len(content)}
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large (max {SecurityValidator.MAX_FILE_SIZE} bytes)"
+            )
 
         # Extract text from file (in-memory)
         from jobscout.resume_parser import ResumeParser
