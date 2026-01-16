@@ -382,14 +382,14 @@ async def upload_resume(file: UploadFile = File(...)):
         content = await file.read()
 
         # Double-check actual file size
-        if len(content) > SecurityValidator.MAX_FILE_SIZE:
+        if len(content) > SecurityConfig.MAX_FILE_SIZE:
             SecurityLogger.log_security_event(
                 "file_size_exceeded",
                 {"filename": file.filename, "size": len(content)}
             )
             raise HTTPException(
                 status_code=400,
-                detail=f"File too large (max {SecurityValidator.MAX_FILE_SIZE} bytes)"
+                detail=f"File too large (max {SecurityConfig.MAX_FILE_SIZE} bytes)"
             )
 
         # Extract text from file (in-memory)
