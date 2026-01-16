@@ -126,21 +126,30 @@ def extract_profile(resume_text: str) -> Dict[str, Any]:
 
         system_prompt = """You are an expert resume analyzer. Extract a structured developer profile from resume text.
 
-Extract:
-1. Technical skills (languages, frameworks, tools, databases)
-2. Seniority level (junior/mid/senior/staff)
-3. Primary role category: ONE of [backend, frontend, fullstack, devops, data, mobile, qa, security]
-4. Years of experience (explicit or inferred)
-5. Specializations: specific domains (AI/ML, security, gaming, fintech, etc.)
+Extract ONLY what is explicitly written in the resume. Do NOT add skills you think they "should" have.
 
-Rules:
+Extract:
+1. Technical skills (languages, frameworks, tools, databases) - ONLY those mentioned in resume
+2. Seniority level (junior/mid/senior/staff) - from job titles or explicit statements
+3. Role categories: Select ALL that apply from [backend, frontend, fullstack, devops, data, mobile, qa, security]
+   - Base this ONLY on technologies and experience explicitly mentioned
+   - Python/Django/Flask/FastAPI = backend
+   - React/Vue/Angular/javascript = frontend
+   - React + Python = both backend AND frontend (fullstack)
+   - Kubernetes/Docker/Terraform = devops
+   - ML/AI/Pandas/PyTorch = data
+   - iOS/Swift/Android/Kotlin = mobile
+4. Years of experience (explicit or inferred) - only if clearly stated
+5. Specializations: specific domains (fintech, healthcare, gaming, etc.) - ONLY if explicitly mentioned
+
+CRITICAL RULES:
+- ONLY extract skills that appear in the resume text
+- DO NOT infer or assume skills not explicitly mentioned
+- If a technology isn't named, do NOT include it
+- "Backend" does not imply node.js, fastify, or any other specific framework
+- When uncertain, leave it OUT rather than guess
 - Normalize skills to lowercase
 - Group related skills (react/typescript/javascript are separate)
-- If seniority is unclear, use "unknown"
-- Only infer years if explicitly stated or clear from career progression
-- Primary role: Pick the ONE best-fit category based on the candidate's main experience
-- Specializations: Domain expertise like "ai/ml", "security", "fintech", "gaming", "embedded systems"
-- DO NOT put technical skills in specializations
 
 Return ONLY valid JSON. No markdown, no explanations."""
 
@@ -152,9 +161,9 @@ Return JSON in this exact format:
 {{
     "skills": ["python", "javascript", "react", "sql", ...],
     "seniority": "junior|mid|senior|staff|unknown",
-    "role_focus": "backend|frontend|fullstack|devops|data|mobile|qa|security",
+    "role_focus": ["backend", "frontend", "devops", ...],
     "years_experience": <number or null>,
-    "specializations": ["ai/ml", "fintech", "security", ...]
+    "specializations": ["fintech", "healthcare", ...]
 }}"""
 
         response = _call_chat_completion(

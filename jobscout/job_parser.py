@@ -423,17 +423,13 @@ class JobParser:
         must_have = self._extract_skills(requirements_text)
         nice_to_have = self._extract_nice_to_have(job.description)
 
-        # Check if description is truncated and supplement with title-based extraction
-        is_truncated = self._is_description_truncated(job.description)
-        if is_truncated:
-            logger.debug(f"Job '{job.title}' appears to have truncated description, extracting from title")
-            title_skills = self._extract_skills_from_title(job.title)
+        # ALWAYS extract skills from title - title is the most reliable tech stack indicator
+        title_skills = self._extract_skills_from_title(job.title)
 
-            # Add title-extracted skills to must-have since description is incomplete
-            # This catches cases like "Senior Backend PHP Engineer" where PHP is only in title
-            if title_skills:
-                must_have.update(title_skills)
-                logger.debug(f"Added {len(title_skills)} skills from title: {title_skills}")
+        # Add title skills to must-have (title explicitly states required tech)
+        if title_skills:
+            must_have.update(title_skills)
+            logger.debug(f"Added {len(title_skills)} skills from title '{job.title}': {title_skills}")
 
         # Extract seniority requirements
         years, seniority = self._extract_seniority_requirements(job.description)
