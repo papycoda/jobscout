@@ -129,17 +129,18 @@ def extract_profile(resume_text: str) -> Dict[str, Any]:
 Extract:
 1. Technical skills (languages, frameworks, tools, databases)
 2. Seniority level (junior/mid/senior/staff)
-3. Role focus areas (backend, frontend, fullstack, devops, data, mobile, etc.)
+3. Primary role category: ONE of [backend, frontend, fullstack, devops, data, mobile, qa, security]
 4. Years of experience (explicit or inferred)
-5. Additional role keywords
+5. Specializations: specific domains (AI/ML, security, gaming, fintech, etc.)
 
 Rules:
 - Normalize skills to lowercase
 - Group related skills (react/typescript/javascript are separate)
 - If seniority is unclear, use "unknown"
 - Only infer years if explicitly stated or clear from career progression
-- Role focus: main areas of expertise (e.g., ["backend", "devops"])
-- Keywords: job titles, role descriptions, domain expertise
+- Primary role: Pick the ONE best-fit category based on the candidate's main experience
+- Specializations: Domain expertise like "ai/ml", "security", "fintech", "gaming", "embedded systems"
+- DO NOT put technical skills in specializations
 
 Return ONLY valid JSON. No markdown, no explanations."""
 
@@ -151,9 +152,9 @@ Return JSON in this exact format:
 {{
     "skills": ["python", "javascript", "react", "sql", ...],
     "seniority": "junior|mid|senior|staff|unknown",
-    "role_focus": ["backend", "frontend", "devops", "data", ...],
+    "role_focus": "backend|frontend|fullstack|devops|data|mobile|qa|security",
     "years_experience": <number or null>,
-    "keywords": ["software engineer", "full stack developer", ...]
+    "specializations": ["ai/ml", "fintech", "security", ...]
 }}"""
 
         response = _call_chat_completion(
@@ -237,7 +238,9 @@ def _normalize_profile(raw_profile: Dict[str, Any]) -> Dict[str, Any]:
     raw_seniority = raw_profile.get("seniority", "unknown").lower().strip()
     seniority = seniority_map.get(raw_seniority, "unknown")
 
-    # Normalize role focus
+    # Normalize role focus - handle both string and array formats
+    valid_roles = {"backend", "frontend", "fullstack", "devops", "data", "mobile", "qa", "security"}
+
     role_focus_map = {
         "backend": "backend",
         "back-end": "backend",
@@ -251,22 +254,41 @@ def _normalize_profile(raw_profile: Dict[str, Any]) -> Dict[str, Any]:
         "devops": "devops",
         "dev-ops": "devops",
         "sre": "devops",
+        "site reliability": "devops",
         "data": "data",
         "data science": "data",
         "machine learning": "data",
         "ml": "data",
+        "ai": "data",
         "mobile": "mobile",
         "ios": "mobile",
-        "android": "mobile"
+        "android": "mobile",
+        "qa": "qa",
+        "quality assurance": "qa",
+        "testing": "qa",
+        "security": "security"
     }
-    raw_roles = raw_profile.get("role_focus", [])
+
+    raw_role_input = raw_profile.get("role_focus", [])
     role_focus = []
+
+    # Handle both string and array input
+    if isinstance(raw_role_input, str):
+        raw_roles = [raw_role_input]
+    else:
+        raw_roles = raw_role_input if isinstance(raw_role_input, list) else []
+
     for role in raw_roles:
         if isinstance(role, str):
             role_lower = role.lower().strip()
-            normalized = role_focus_map.get(role_lower, role_lower)
-            if normalized and normalized not in role_focus:
-                role_focus.append(normalized)
+            normalized = role_focus_map.get(role_lower)
+            if normalized and normalized in valid_roles:
+                if normalized not in role_focus:
+                    role_focus.append(normalized)
+
+    # If no valid role found, default to unknown/empty
+    if not role_focus:
+        role_focus = []
 
     # Years experience
     years_experience = raw_profile.get("years_experience")
@@ -278,9 +300,15 @@ def _normalize_profile(raw_profile: Dict[str, Any]) -> Dict[str, Any]:
         except (ValueError, TypeError):
             years_experience = None
 
-    # Keywords
-    keywords = raw_profile.get("keywords", [])
+    # Handle both "specializations" (new) and "keywords" (old/compat)
+    # Combine them for output as "keywords" for backwards compatibility
+    keywords = []
+    if raw_profile.get("specializations"):
+        keywords.extend(raw_profile.get("specializations", []))
+    if raw_profile.get("keywords"):
+        keywords.extend(raw_profile.get("keywords", []))
     keywords = [k.strip() for k in keywords if k and isinstance(k, str)]
+    keywords = list(set(keywords))  # dedupe
 
     return {
         "skills": skills,
