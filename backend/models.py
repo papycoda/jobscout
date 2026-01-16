@@ -153,3 +153,13 @@ class UpdateLLMModelResponse(BaseModel):
     success: bool
     model_id: str
     model_name: str
+
+
+# Metrics
+class MetricsResponse(BaseModel):
+    total_searches: int
+    total_resume_uploads: int
+    total_emails_sent: int
+    recent_searches: List[dict]
+    avg_jobs_per_search: float
+    avg_match_rate: float

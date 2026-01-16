@@ -33,6 +33,7 @@ from jobscout.role_recommender import RoleRecommender
 from backend.storage import Storage
 from backend.adapter import JobScoutAdapter, send_email_digest_from_jobs
 from backend.models import *
+from backend.metrics import metrics_tracker
 from backend.llm import generate_match_explanation
 
 
@@ -254,9 +255,15 @@ async def health_check_render():
 
 @app.get("/debug")
 async def debug_info():
-    """Debug endpoint to check disk configuration."""
+    """Debug endpoint to check disk configuration. Only available when DEBUG=true."""
     import os
     from pathlib import Path
+
+    if os.getenv("DEBUG", "").lower() != "true":
+        raise HTTPException(
+            status_code=404,
+            detail="Not found"
+        )
 
     data_dir = os.getenv("DATA_DIR", "/var/data")
 
@@ -279,6 +286,64 @@ async def debug_info():
 async def health_check():
     """Health check endpoint."""
     return {"ok": True}
+
+
+@app.get("/api/metrics", response_model=MetricsResponse)
+async def get_metrics(request: Request):
+    """
+    Get application metrics for PMF tracking.
+
+    Requires API key authentication.
+    """
+    # Always require auth for metrics (even when API key auth is disabled globally)
+    from backend.security import SecurityConfig
+
+    api_key = request.headers.get(SecurityConfig.API_KEY_HEADER)
+    metrics_api_key = os.getenv("METRICS_API_KEY", os.getenv("API_KEY", ""))
+
+    if not metrics_api_key or not api_key:
+        raise HTTPException(
+            status_code=401,
+            detail="API key required for metrics"
+        )
+
+    import hmac
+    if not hmac.compare_digest(api_key, metrics_api_key):
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid API key"
+        )
+
+    return metrics_tracker.get_metrics()
+
+
+@app.post("/api/metrics/reset")
+async def reset_metrics(request: Request):
+    """
+    Reset all metrics (admin only).
+
+    Requires API key authentication.
+    """
+    from backend.security import SecurityConfig
+
+    api_key = request.headers.get(SecurityConfig.API_KEY_HEADER)
+    metrics_api_key = os.getenv("METRICS_API_KEY", os.getenv("API_KEY", ""))
+
+    if not metrics_api_key or not api_key:
+        raise HTTPException(
+            status_code=401,
+            detail="API key required"
+        )
+
+    import hmac
+    if not hmac.compare_digest(api_key, metrics_api_key):
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid API key"
+        )
+
+    metrics_tracker.reset()
+    return {"ok": True, "message": "Metrics reset"}
 
 
 @app.post("/api/upload-resume")
@@ -365,6 +430,12 @@ async def upload_resume(file: UploadFile = File(...)):
 
         # Return results
         skills_list = sorted(profile["skills"])
+
+        # Track metrics
+        metrics_tracker.record_resume_upload(
+            skills_count=len(profile["skills"]),
+            seniority=profile.get("seniority", "unknown")
+        )
 
         return {
             "profile": {
@@ -957,6 +1028,15 @@ async def search_jobs(request: dict):
             "stats": stats
         }
 
+        # Track metrics
+        import hashlib
+        run_id = hashlib.sha256(str(time.time()).encode()).hexdigest()[:16]
+        metrics_tracker.record_search(
+            run_id=run_id,
+            matched_count=len(matched_jobs),
+            filtered_count=len(filtered_jobs)
+        )
+
         # Optional: Send email digest
         email_status = None
         if send_digest and matched_jobs:
@@ -1023,9 +1103,16 @@ async def search_jobs(request: dict):
                 success = emailer.send_digest(scored_for_email[:10])
 
                 if success:
+                    digest_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    # Track metrics
+                    metrics_tracker.record_email_sent(
+                        digest_id=digest_id,
+                        job_count=len(matched_jobs),
+                        mode="smtp"
+                    )
                     email_status = {
                         "sent": True,
-                        "digest_id": datetime.now().strftime('%Y%m%d_%H%M%S')
+                        "digest_id": digest_id
                     }
                 else:
                     email_status = {
@@ -1280,6 +1367,14 @@ async def send_digest(request: SendDigestRequest):
                 "job_count": len(jobs)
             }
         )
+
+        # Track metrics
+        if result["mode"] in ("smtp", "outbox"):
+            metrics_tracker.record_email_sent(
+                digest_id=digest_id,
+                job_count=len(jobs),
+                mode=result["mode"]
+            )
 
         return SendDigestResponse(
             digest_id=digest_id,
