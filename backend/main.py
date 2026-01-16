@@ -14,7 +14,7 @@ try:
 except ImportError:
     pass  # .env file not required, can use system env vars
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, UploadFile, File, Query, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from backend.security import (
