@@ -22,7 +22,8 @@ from backend.security import (
     APIKeyAuthMiddleware,
     RateLimitMiddleware,
     SecurityValidator,
-    SecurityLogger
+    SecurityLogger,
+    SecurityConfig
 )
 
 # Add parent directory to path to import jobscout
