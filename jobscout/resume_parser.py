@@ -39,6 +39,38 @@ SKILL_DICT = {
     "angular": ["angular"],
     "svelte": ["svelte"],
 
+    # Modern Web Frameworks
+    "nextjs": ["nextjs", "next.js", "next js", "nextjs"],
+    "nuxt": ["nuxt", "nuxt.js", "nuxtjs"],
+    "remix": ["remix", "remix.run"],
+    "astro": ["astro"],
+    "solidjs": ["solid", "solid.js", "solidjs"],
+
+    # Styling & UI
+    "tailwind": ["tailwind", "tailwindcss", "tailwind css"],
+    "shadcn": ["shadcn", "shadcn/ui", "shadcn ui"],
+    "mui": ["mui", "material ui", "material-ui"],
+    "chakra": ["chakra", "chakra ui"],
+
+    # Runtimes
+    "bun": ["bun"],
+    "deno": ["deno"],
+
+    # Backend/Data
+    "graphql": ["graphql", "gql", "graphql api", "graphql"],
+    "trpc": ["trpc", "trpc.io"],
+    "prisma": ["prisma", "prisma orm"],
+    "drizzle": ["drizzle", "drizzle orm"],
+    "supabase": ["supabase"],
+    "planetscale": ["planetscale"],
+    "neon": ["neon db", "neon database"],
+
+    # Edge/Serverless
+    "vercel": ["vercel"],
+    "netlify": ["netlify"],
+    "cloudflare_workers": ["cloudflare workers", "workers"],
+    "fly_io": ["fly.io", "flyio"],
+
     # Infrastructure
     "docker": ["docker"],
     "kubernetes": ["kubernetes", "k8s", "k8"],
@@ -61,6 +93,13 @@ SKILL_DICT = {
     "cassandra": ["cassandra"],
     "cockroachdb": ["cockroachdb", "cockroach"],
 
+    # Data & Caching
+    "timescaledb": ["timescaledb", "timescale"],
+    "clickhouse": ["clickhouse"],
+    "meilisearch": ["meilisearch"],
+    "pinecone": ["pinecone"],
+    "weaviate": ["weaviate"],
+
     # Messaging & Queues
     "kafka": ["kafka"],
     "rabbitmq": ["rabbitmq", "rabbit mq"],
@@ -78,6 +117,12 @@ SKILL_DICT = {
     "jenkins": ["jenkins"],
     "travis": ["travis ci"],
     "circleci": ["circleci"],
+
+    # Observability
+    "datadog": ["datadog"],
+    "sentry": ["sentry"],
+    "prometheus": ["prometheus"],
+    "grafana": ["grafana"],
 }
 
 

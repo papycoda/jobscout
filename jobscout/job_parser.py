@@ -144,7 +144,8 @@ class JobParser:
         # Smart LLM fallback: only if LLM enabled AND regex found little AND job looks promising
         if self.use_llm and self.llm_parser and user_skills is not None:
             # Check if regex found enough must-haves
-            if len(regex_result.must_have_skills) < 2:
+            # Lower threshold from 2 to 3 to trigger LLM more often for better parsing
+            if len(regex_result.must_have_skills) < 3:
                 # Check if job looks promising (has some matching skills)
                 all_job_skills = regex_result.must_have_skills | regex_result.nice_to_have_skills
                 matching_skills = all_job_skills & user_skills
@@ -160,13 +161,17 @@ class JobParser:
                             "apply_url": job.apply_url,
                             "source": job.source,
                         }
-                        # Pass user context to LLM parser
+                        # Extract title skills for LLM context (title is most reliable indicator)
+                        title_skills = self._extract_skills_from_title(job.title)
+
+                        # Pass user context to LLM parser with title skills
                         llm_result = self.llm_parser.parse(
                             job.description,
                             job_metadata,
                             user_skills=user_skills,
                             user_seniority=getattr(self, '_user_seniority', 'unknown'),
-                            user_years_experience=getattr(self, '_user_years_experience', 0.0)
+                            user_years_experience=getattr(self, '_user_years_experience', 0.0),
+                            title_skills=title_skills  # Include title skills for better context
                         )
                         # Mark as LLM-enhanced for debugging
                         llm_result._parsing_method = "llm_fallback"
@@ -203,8 +208,8 @@ class JobParser:
             regex_result = self._parse_with_regex(job)
             regex_results.append((job, regex_result))
 
-            # Check if this job needs LLM enhancement
-            if len(regex_result.must_have_skills) < 2:
+            # Check if this job needs LLM enhancement (lower threshold to 3)
+            if len(regex_result.must_have_skills) < 3:
                 all_job_skills = regex_result.must_have_skills | regex_result.nice_to_have_skills
                 matching_skills = all_job_skills & user_skills
 
@@ -231,13 +236,17 @@ class JobParser:
                     "apply_url": job.apply_url,
                     "source": job.source,
                 }
-                # Pass user context to LLM parser
+                # Extract title skills for LLM context
+                title_skills = self._extract_skills_from_title(job.title)
+
+                # Pass user context to LLM parser with title skills
                 llm_result = self.llm_parser.parse(
                     job.description,
                     job_metadata,
                     user_skills=user_skills,
                     user_seniority=getattr(self, '_user_seniority', 'unknown'),
-                    user_years_experience=getattr(self, '_user_years_experience', 0.0)
+                    user_years_experience=getattr(self, '_user_years_experience', 0.0),
+                    title_skills=title_skills  # Include title skills for better context
                 )
                 llm_result._parsing_method = "llm_fallback"
                 return job, llm_result

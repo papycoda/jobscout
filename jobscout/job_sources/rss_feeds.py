@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 from typing import List
 from .base import JobSource, JobListing
+from .truncation import expand_truncated_jobs
 
 
 logger = logging.getLogger(__name__)
@@ -121,6 +122,8 @@ class RemoteOKSource(JobSource):
         except Exception as e:
             logger.error(f"Failed to fetch RemoteOK feed: {e}")
 
+        # Expand truncated job descriptions
+        jobs = expand_truncated_jobs(jobs)
         return jobs
 
 
@@ -169,5 +172,111 @@ class WeWorkRemotelySource(JobSource):
 
         except Exception as e:
             logger.error(f"Failed to fetch WWR feed: {e}")
+
+        # Expand truncated job descriptions
+        jobs = expand_truncated_jobs(jobs)
+        return jobs
+
+
+class HimalayasSource(JobSource):
+    """Fetch jobs from Himalayas (remote startup jobs)."""
+
+    HIMALAYAS_RSS = "https://himalayas.app/jobs/rss"
+
+    def fetch_jobs(self, limit: int = 20) -> List[JobListing]:
+        """Fetch jobs from Himalayas."""
+        jobs = []
+        try:
+            feed = feedparser.parse(self.HIMALAYAS_RSS)
+
+            for entry in feed.entries[:limit]:
+                try:
+                    title = entry.get('title', '')
+
+                    company = entry.get('author', '')
+                    if not company:
+                        # Try to extract company from title
+                        parts = title.split(' at ')
+                        if len(parts) > 1:
+                            company = parts[-1].strip()
+                        else:
+                            company = 'Unknown Company'
+
+                    apply_url = entry.get('link', '')
+                    description = entry.get('description', '')
+
+                    # Parse date
+                    posted_date = None
+                    if 'published' in entry:
+                        try:
+                            posted_date = datetime(*entry.published_parsed[:6])
+                        except (TypeError, ValueError):
+                            pass
+
+                    job = JobListing(
+                        title=title,
+                        company=company,
+                        location="Remote",
+                        description=description,
+                        apply_url=apply_url,
+                        source="Himalayas",
+                        posted_date=posted_date
+                    )
+                    jobs.append(job)
+
+                except Exception as e:
+                    logger.warning(f"Failed to parse Himalayas entry: {e}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Failed to fetch Himalayas feed: {e}")
+
+        return jobs
+
+
+class JavascriptJobsSource(JobSource):
+    """Fetch jobs from JavaScriptJobs RSS feed."""
+
+    JSJOBS_RSS = "https://www.jsjobs.net/feed"
+
+    def fetch_jobs(self, limit: int = 15) -> List[JobListing]:
+        """Fetch jobs from JavaScriptJobs."""
+        jobs = []
+        try:
+            feed = feedparser.parse(self.JSJOBS_RSS)
+
+            for entry in feed.entries[:limit]:
+                try:
+                    title = entry.get('title', '')
+
+                    company = entry.get('author', 'Unknown Company')
+                    apply_url = entry.get('link', '')
+                    description = entry.get('description', '')
+
+                    # Parse date
+                    posted_date = None
+                    if 'published' in entry:
+                        try:
+                            posted_date = datetime(*entry.published_parsed[:6])
+                        except (TypeError, ValueError):
+                            pass
+
+                    job = JobListing(
+                        title=title,
+                        company=company,
+                        location="Remote",
+                        description=description,
+                        apply_url=apply_url,
+                        source="JavaScriptJobs",
+                        posted_date=posted_date
+                    )
+                    jobs.append(job)
+
+                except Exception as e:
+                    logger.warning(f"Failed to parse JavaScriptJobs entry: {e}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Failed to fetch JavaScriptJobs feed: {e}")
 
         return jobs

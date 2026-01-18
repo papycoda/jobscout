@@ -38,6 +38,7 @@ from backend.adapter import JobScoutAdapter, send_email_digest_from_jobs
 from backend.models import *
 from backend.metrics import metrics_tracker
 from backend.llm import generate_match_explanation
+from jobscout.semantic import preload_semantic_model
 
 
 # Configure logging
@@ -78,6 +79,16 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE"],  # Restrict methods
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def _preload_semantic():
+    """Preload semantic model at startup; fall back silently if unavailable."""
+    ready = preload_semantic_model()
+    if ready:
+        logger.info("Semantic model ready at startup")
+    else:
+        logger.warning("Semantic model not ready at startup; runtime will fall back as needed")
 
 
 # Initialize storage
@@ -631,7 +642,7 @@ async def search_jobs(request: dict):
     try:
         from datetime import datetime
         import hashlib
-        from jobscout.job_sources.rss_feeds import RemoteOKSource, WeWorkRemotelySource
+        from jobscout.job_sources.rss_feeds import RemoteOKSource, WeWorkRemotelySource, HimalayasSource, JavascriptJobsSource
         from jobscout.job_sources.remotive_api import RemotiveSource
         from jobscout.job_sources.greenhouse_api import GreenhouseSource
         from jobscout.job_sources.lever_api import LeverSource
@@ -666,7 +677,7 @@ async def search_jobs(request: dict):
         use_llm = (has_api_key and (llm_pref is None or bool(llm_pref)))
 
         # Default job boards (only include boards that can return data without extra config)
-        default_boards = ["remoteok", "weworkremotely", "remotive"]
+        default_boards = ["remoteok", "weworkremotely", "remotive", "himalayas", "jsjobs"]
         if os.getenv("GREENHOUSE_BOARDS"):
             default_boards.append("greenhouse")
         if os.getenv("LEVER_COMPANIES"):
@@ -767,6 +778,14 @@ async def search_jobs(request: dict):
                 elif board.lower() == "weworkremotely":
                     source = WeWorkRemotelySource("We Work Remotely")
                     jobs = source.fetch_jobs(limit=50)
+                    all_jobs.extend(jobs)
+                elif board.lower() == "himalayas":
+                    source = HimalayasSource("Himalayas")
+                    jobs = source.fetch_jobs(limit=20)
+                    all_jobs.extend(jobs)
+                elif board.lower() == "jsjobs":
+                    source = JavascriptJobsSource("JavaScriptJobs")
+                    jobs = source.fetch_jobs(limit=15)
                     all_jobs.extend(jobs)
                 elif board.lower() == "remotive":
                     source = RemotiveSource("Remotive")

@@ -85,7 +85,8 @@ class LLMJobParser:
         job_metadata: Optional[Dict] = None,
         user_skills: Optional[Set[str]] = None,
         user_seniority: str = "unknown",
-        user_years_experience: float = 0.0
+        user_years_experience: float = 0.0,
+        title_skills: Optional[Set[str]] = None
     ) -> ParsedJob:
         """
         Parse job description using LLM with user context.
@@ -106,7 +107,8 @@ class LLMJobParser:
                 job_metadata,
                 user_skills or set(),
                 user_seniority,
-                user_years_experience
+                user_years_experience,
+                title_skills or set()
             )
             logger.info(f"LLM parsing successful (confidence: {llm_result.confidence:.2f})")
 
@@ -138,7 +140,8 @@ class LLMJobParser:
         job_metadata: Optional[Dict],
         user_skills: Set[str],
         user_seniority: str,
-        user_years_experience: float
+        user_years_experience: float,
+        title_skills: Set[str] = set()
     ) -> LLMParseResult:
         """Parse job description using LLM API with user context."""
 
@@ -154,7 +157,12 @@ class LLMJobParser:
 - Company: {job_metadata.get('company', 'Unknown') if job_metadata else 'Unknown'}
 - Location: {job_metadata.get('location', 'Unknown') if job_metadata else 'Unknown'}"""
 
-        system_prompt = """You are an expert job matcher. Extract only the signals that matter for fit and search.
+        # Add title skills if available (title is most reliable indicator)
+        title_context = ""
+        if title_skills:
+            title_context = f"\n- Skills from Title: {sorted(title_skills)}"
+
+        system_prompt = f"""You are an expert job matcher. Extract only the signals that matter for fit and search.
 
 Rules (apply in order):
 1) Use canonical skills only. Map variants to canonical list below; if no clear mapping, drop it.
@@ -196,7 +204,7 @@ Result:
 
         user_prompt = f"""{user_context}
 
-{job_info}
+{job_info}{title_context}
 
 {examples}
 

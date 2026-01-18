@@ -14,3 +14,7 @@ apscheduler>=3.10.4
 pyyaml>=6.0.1
 beautifulsoup4>=4.12.3
 lxml>=5.1.0
+
+# Semantic similarity
+sentence-transformers>=2.6.1
+numpy>=1.26.0

@@ -5,7 +5,7 @@ from typing import List
 from .config import JobScoutConfig
 from .resume_parser import ResumeParser
 from .job_sources.base import JobListing
-from .job_sources.rss_feeds import RemoteOKSource, WeWorkRemotelySource
+from .job_sources.rss_feeds import RemoteOKSource, WeWorkRemotelySource, HimalayasSource, JavascriptJobsSource
 from .job_sources.remotive_api import RemotiveSource
 from .job_sources.boolean_search import BooleanSearchSource
 from .job_sources.greenhouse_api import GreenhouseSource
@@ -15,6 +15,7 @@ from .filters import HardExclusionFilters
 from .scoring import JobScorer
 from .emailer import EmailDelivery
 from .role_recommender import RoleRecommender
+from .dedup import get_deduplicator
 
 
 # Configure logging
@@ -82,6 +83,12 @@ class JobScout:
         # Initialize scorer
         self.scorer = JobScorer(self.resume, config, preferred_stack)
 
+        # Initialize cross-run deduplicator
+        self.deduplicator = get_deduplicator(
+            cache_file="./data/seen_jobs.json",
+            max_age_days=config.job_preferences.max_job_age_days
+        )
+
     def run_search(self) -> bool:
         """
         Run complete job search pipeline.
@@ -94,9 +101,18 @@ class JobScout:
             jobs = self._fetch_jobs()
             logger.info(f"Fetched {len(jobs)} total jobs")
 
+            # Step 1.5: Cross-run deduplication (filter out jobs we've seen before)
+            logger.info("Step 1.5: Cross-run deduplication...")
+            new_jobs = [j for j in jobs if not self.deduplicator.is_seen(j.apply_url)]
+            skipped = len(jobs) - len(new_jobs)
+            logger.info(f"After cross-run dedup: {len(new_jobs)} jobs (skipped {skipped} seen)")
+
+            # Mark the new jobs as seen now (we'll process them in this run)
+            self.deduplicator.mark_seen_batch(new_jobs)
+
             # Step 2: Parse job descriptions
             logger.info("Step 2: Parsing job descriptions...")
-            parsed_jobs = self._parse_jobs(jobs)
+            parsed_jobs = self._parse_jobs(new_jobs)
             logger.info(f"Parsed {len(parsed_jobs)} jobs")
 
             # Step 3: Apply hard exclusion filters
@@ -146,7 +162,7 @@ class JobScout:
         # Default sources if none specified
         boards = self.config.job_preferences.job_boards
         if not boards:
-            boards = ["remoteok", "weworkremotely", "remotive"]
+            boards = ["remoteok", "weworkremotely", "remotive", "himalayas", "jsjobs"]
             if self.config.job_preferences.greenhouse_boards:
                 boards.append("greenhouse")
             if self.config.job_preferences.lever_companies:
@@ -177,6 +193,14 @@ class JobScout:
         elif board_lower == "weworkremotely":
             source = WeWorkRemotelySource("We Work Remotely")
             return source.fetch_jobs(limit=50)
+
+        elif board_lower == "himalayas":
+            source = HimalayasSource("Himalayas")
+            return source.fetch_jobs(limit=20)
+
+        elif board_lower == "jsjobs":
+            source = JavascriptJobsSource("JavaScriptJobs")
+            return source.fetch_jobs(limit=15)
 
         elif board_lower == "remotive":
             source = RemotiveSource("Remotive")

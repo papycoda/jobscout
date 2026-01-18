@@ -66,6 +66,7 @@ class JobScoutConfig:
     # Scoring thresholds
     min_score_threshold: float = 60.0  # 60% for "apply-ready" (lowered from 65%)
     fallback_min_score: float = 65.0  # Deprecated: now uses min_score_threshold for all cases
+    soft_language_gate: bool = False  # If True, allow missing 1 language/framework instead of strict rejection
 
     @classmethod
     def from_yaml(cls, path: str) -> "JobScoutConfig":
@@ -94,6 +95,8 @@ class JobScoutConfig:
             config.min_score_threshold = float(os.getenv("JOBSCOUT_MIN_SCORE_THRESHOLD"))
         if os.getenv("JOBSCOUT_FALLBACK_MIN_SCORE"):
             config.fallback_min_score = float(os.getenv("JOBSCOUT_FALLBACK_MIN_SCORE"))
+        if os.getenv("JOBSCOUT_SOFT_LANGUAGE_GATE"):
+            config.soft_language_gate = os.getenv("JOBSCOUT_SOFT_LANGUAGE_GATE").lower() == "true"
 
         return config
 

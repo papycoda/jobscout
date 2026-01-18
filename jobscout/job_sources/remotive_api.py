@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 from typing import List
 from .base import JobSource, JobListing
+from .truncation import expand_truncated_jobs
 
 
 logger = logging.getLogger(__name__)
@@ -66,4 +67,6 @@ class RemotiveSource(JobSource):
         except requests.RequestException as e:
             logger.error(f"Failed to fetch Remotive API: {e}")
 
+        # Expand truncated job descriptions
+        jobs = expand_truncated_jobs(jobs)
         return jobs

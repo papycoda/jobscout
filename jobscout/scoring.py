@@ -1,8 +1,9 @@
 """Conservative job scoring system with stronger emphasis on languages/frameworks and role fit."""
 
 import logging
+import os
 from dataclasses import dataclass, field
-from typing import List, Set, Dict
+from typing import List, Set, Dict, Optional
 from .job_parser import ParsedJob
 
 
@@ -11,22 +12,25 @@ logger = logging.getLogger(__name__)
 # High-signal skills (languages & frameworks) get extra weight in scoring
 LANGUAGE_SKILLS = {
     "python", "javascript", "typescript", "java", "go", "c#", "c++", "ruby",
-    "php", "rust", "swift", "kotlin", "scala"
+    "php", "rust", "swift", "kotlin", "scala", "graphql"
 }
 FRAMEWORK_SKILLS = {
     "django", "fastapi", "flask", "spring", "express", "nestjs",
-    "react", "vue", "angular", "svelte"
+    "react", "vue", "angular", "svelte", "nextjs", "nuxt", "remix",
+    "astro", "solidjs", "tailwind", "prisma", "drizzle", "trpc",
+    "supabase", "vercel", "netlify"
 }
 HIGH_VALUE_SKILLS = LANGUAGE_SKILLS | FRAMEWORK_SKILLS
 
 # Role signals used to align candidate intent with job intent
+# Note: Use multi-word phrases to avoid substring false positives (e.g., "ui" in "building")
 ROLE_KEYWORDS: Dict[str, List[str]] = {
-    "backend": ["backend", "back-end", "server", "api"],
-    "frontend": ["frontend", "front-end", "ui", "javascript", "react", "vue", "angular"],
+    "backend": ["backend", "back-end", "server side", "server-side", "api engineer"],
+    "frontend": ["frontend", "front-end", "front end", "ui engineer", "ux engineer", "client side", "client-side"],
     "fullstack": ["fullstack", "full-stack", "full stack"],
-    "devops": ["devops", "sre", "site reliability", "platform"],
-    "data": ["data", "ml", "machine learning", "analytics"],
-    "mobile": ["mobile", "ios", "android"],
+    "devops": ["devops", "sre", "site reliability", "platform engineer"],
+    "data": ["data engineer", "data scientist", "machine learning", "ml engineer", "analytics"],
+    "mobile": ["mobile developer", "ios developer", "android developer"],
 }
 ROLE_SKILL_HINTS: Dict[str, Set[str]] = {
     "backend": {
@@ -53,6 +57,7 @@ class ScoredJob:
     stack_overlap: float  # 0-1
     seniority_alignment: float  # 0-1
     role_alignment: float = 0.0  # 0-1
+    semantic_score: Optional[float] = None  # 0-1, None if not computed
 
     # Details
     missing_must_haves: Set[str] = field(default_factory=set)
@@ -99,12 +104,42 @@ class JobScorer:
         resume_role_text = " ".join(resume.role_keywords or [])
         self.candidate_roles = self._extract_roles(resume_role_text, self.all_candidate_skills)
 
+        # Initialize semantic scorer (optional)
+        self.semantic_scorer = None
+        self._resume_embedding = None
+        if os.getenv("JOBSCOUT_DISABLE_SEMANTIC_SCORING") != "1":
+            try:
+                from .semantic import SemanticScorer
+                self.semantic_scorer = SemanticScorer(semantic_weight=0.5)
+                if self.semantic_scorer.is_enabled():
+                    logger.info("Semantic scoring enabled (sentence-transformers or fallback)")
+                else:
+                    logger.info("Semantic scoring unavailable (model not loaded)")
+            except ImportError:
+                logger.warning("sentence-transformers not available, semantic scoring disabled")
+            except Exception as e:
+                logger.warning(f"Semantic scoring initialization failed: {e}")
+
     def score_jobs(self, jobs: List[ParsedJob]) -> List[ScoredJob]:
         """Score all jobs and return apply-ready ones."""
+        # Step 1: Compute semantic scores in batch (if enabled)
+        semantic_scores = None
+        if self.semantic_scorer and self.semantic_scorer.is_enabled():
+            try:
+                # Get resume text from stored resume
+                resume_text = self._get_resume_text()
+                job_descriptions = [job.description for job in jobs]
+                semantic_scores = self.semantic_scorer.compute_semantic_scores(resume_text, job_descriptions)
+                logger.info(f"Computed semantic scores for {len(jobs)} jobs")
+            except Exception as e:
+                logger.warning(f"Semantic scoring failed: {e}. Using exact-only scoring.")
+                semantic_scores = None
+
         scored_jobs = []
 
-        for job in jobs:
-            scored = self._score_job(job)
+        for i, job in enumerate(jobs):
+            semantic_score = semantic_scores[i] if semantic_scores else None
+            scored = self._score_job(job, semantic_score)
             if scored.is_apply_ready:
                 scored_jobs.append(scored)
             else:
@@ -119,7 +154,7 @@ class JobScorer:
         logger.info(f"Found {len(scored_jobs)} apply-ready jobs")
         return scored_jobs
 
-    def _score_job(self, job: ParsedJob) -> ScoredJob:
+    def _score_job(self, job: ParsedJob, semantic_score: Optional[float] = None) -> ScoredJob:
         """Score a single job."""
         job_roles = self._get_job_roles(job)
 
@@ -142,6 +177,12 @@ class JobScorer:
             + (role_alignment * 10)  # consider role fit (backend/frontend/etc)
             + (seniority * 5)  # still consider seniority, but lighter
         )
+
+        # Blend with semantic score if available
+        if semantic_score is not None and self.semantic_scorer:
+            original_score = score
+            score = self.semantic_scorer.blend_scores(score, semantic_score)
+            logger.debug(f"Semantic blend: {original_score:.1f}% + semantic {semantic_score*100:.1f}% = {score:.1f}%")
 
         # Apply small penalty for unknown posting dates
         if not job.posted_date:
@@ -168,6 +209,7 @@ class JobScorer:
             stack_overlap=overlap,
             seniority_alignment=seniority,
             role_alignment=role_alignment,
+            semantic_score=semantic_score,
             missing_must_haves=missing_must_haves,
             matching_skills=matching_skills
         )
@@ -271,6 +313,7 @@ class JobScorer:
         - AND must-have coverage ≥ 60% (only if must-haves exist)
         - AND at least 2-3 matching languages/frameworks
         - AND no hard role mismatch when roles are known
+        - AND language/framework gate: candidate must have ALL required languages/frameworks
 
         If must-have list is empty:
         - Skip the must-have coverage gate
@@ -284,11 +327,55 @@ class JobScorer:
         matching_count = len(matching_skills)
 
         # If both sides have explicit roles and they do not overlap, treat as mismatch
+        # Exception: fullstack is compatible with backend OR frontend
         role_overlap = job_roles & self.candidate_roles
-        role_known_mismatch = bool(job_roles) and bool(self.candidate_roles) and not role_overlap
+
+        # Fullstack compatibility: fullstack jobs accept backend/frontend candidates
+        # and backend/frontend candidates can apply to fullstack jobs
+        is_compatible_fullstack = (
+            "fullstack" in job_roles and ("backend" in self.candidate_roles or "frontend" in self.candidate_roles)
+        ) or (
+            "fullstack" in self.candidate_roles and ("backend" in job_roles or "frontend" in job_roles)
+        )
+
+        role_known_mismatch = (
+            bool(job_roles) and bool(self.candidate_roles) and not role_overlap and not is_compatible_fullstack
+        )
 
         # Require at least 2 matching skills
         min_matching_skills = 2
+
+        # LANGUAGE/FRAMEWORK GATE: Candidate must have ALL required languages/frameworks
+        # This prevents cases where infrastructure skills (Docker, AWS) compensate for missing core languages
+        # Soft mode: Allow missing 1 language/framework if soft_language_gate is enabled
+        # EXCEPTION: Title skill (e.g., "Ruby Engineer" → Ruby) is always required
+        required_high_value = job.must_have_skills & HIGH_VALUE_SKILLS
+        if required_high_value:
+            missing_critical = required_high_value - self.all_candidate_skills
+
+            # Extract core skill from job title (e.g., "Ruby on Rails Engineer" → "ruby")
+            title_skill = self._extract_title_skill(job.title, job.description)
+
+            # Check if title skill is missing (hard reject even in soft mode)
+            if title_skill and title_skill in missing_critical:
+                logger.debug(
+                    f"Job '{job.title}' at {job.company} rejected: missing title core skill '{title_skill}'"
+                )
+                return False
+
+            # Soft gate: only reject if missing more than 1 high-value skill (and title skill present)
+            if self.config.soft_language_gate:
+                if len(missing_critical) > 1:
+                    logger.debug(
+                        f"Job '{job.title}' at {job.company} rejected: missing {len(missing_critical)} critical skills: {missing_critical}"
+                    )
+                    return False
+            # Strict gate: reject if ANY high-value skill is missing
+            elif missing_critical:
+                logger.debug(
+                    f"Job '{job.title}' at {job.company} rejected: missing critical language/framework: {missing_critical}"
+                )
+                return False
 
         # If no must-haves, skip the coverage gate and use standard threshold
         if not job.must_have_skills:
@@ -330,6 +417,108 @@ class JobScorer:
 
         return roles
 
+    def _extract_title_skill(self, title: str, description: str = "") -> Optional[str]:
+        """
+        Extract the core skill from job title.
+
+        For titles like "Ruby on Rails Engineer", "Python Developer", "React Developer",
+        returns the core language/framework that is clearly the primary requirement.
+
+        Returns None if no clear title skill is found.
+        """
+        if not title:
+            return None
+
+        title_lower = title.lower()
+
+        # Map of title patterns to canonical skills (ordered by specificity)
+        # More specific patterns first (e.g., "ruby on rails" before "ruby")
+        title_patterns = [
+            # Language + Framework combos (most specific)
+            ("ruby on rails", "ruby"),
+            ("ruby/rails", "ruby"),
+            ("node.js", "javascript"),
+            ("nodejs", "javascript"),
+            ("next.js", "nextjs"),
+            ("nuxt.js", "nuxt"),
+            ("react native", "react"),
+
+            # Single-word languages (check exact word boundary)
+            (" python ", "python"),
+            (" python.", "python"),
+            (" python,", "python"),
+            (" javascript ", "javascript"),
+            (" javascript.", "javascript"),
+            (" javascript,", "javascript"),
+            (" typescript ", "typescript"),
+            (" typescript.", "typescript"),
+            (" typescript,", "typescript"),
+            (" java ", "java"),
+            (" java.", "java"),
+            (" java,", "java"),
+            (" go ", "go"),
+            (" golang ", "go"),
+            (" golang.", "go"),
+            (" c# ", "c#"),
+            (" c++ ", "c++"),
+            (" ruby ", "ruby"),
+            (" ruby.", "ruby"),
+            (" ruby,", "ruby"),
+            (" php ", "php"),
+            (" php.", "php"),
+            (" php,", "php"),
+            (" rust ", "rust"),
+            (" rust.", "rust"),
+            (" rust,", "rust"),
+            (" swift ", "swift"),
+            (" swift.", "swift"),
+            (" kotlin ", "kotlin"),
+            (" kotlin.", "kotlin"),
+            (" scala ", "scala"),
+            (" scala.", "scala"),
+
+            # Frameworks (when they're the main title signal)
+            (" django ", "django"),
+            (" django.", "django"),
+            (" fastapi ", "fastapi"),
+            (" fastapi.", "fastapi"),
+            (" flask ", "flask"),
+            (" flask.", "flask"),
+            (" spring ", "spring"),
+            (" spring.", "spring"),
+            (" react ", "react"),
+            (" react.", "react"),
+            (" vue ", "vue"),
+            (" vue.", "vue"),
+            (" angular ", "angular"),
+            (" angular.", "angular"),
+            (" svelte ", "svelte"),
+            (" svelte.", "svelte"),
+            (" nextjs ", "nextjs"),
+            (" nextjs.", "nextjs"),
+            (" nuxt ", "nuxt"),
+            (" nuxt.", "nuxt"),
+            (" remix ", "remix"),
+            (" remix.", "remix"),
+            (" graphql ", "graphql"),
+            (" graphql.", "graphql"),
+        ]
+
+        # Check for exact matches first
+        for pattern, skill in title_patterns:
+            if pattern in title_lower:
+                # Verify the skill is in our high-value set
+                if skill in HIGH_VALUE_SKILLS:
+                    return skill
+
+        # Fallback: check if title starts with a language name
+        # (e.g., "Python Developer", "Java Engineer")
+        for lang in LANGUAGE_SKILLS:
+            if title_lower.startswith(lang + " ") or title_lower.startswith(lang + "/"):
+                return lang
+
+        return None
+
     def _get_job_roles(self, job: ParsedJob) -> Set[str]:
         """Combine explicit role keywords, inferred job_roles, and text extraction."""
         roles = set()
@@ -356,3 +545,22 @@ class JobScorer:
 
         # Mild penalty for mismatch when both sides are clear
         return 0.4
+
+    def _get_resume_text(self) -> str:
+        """Get resume text for semantic embedding."""
+        # Try to get cached text from resume parser
+        if hasattr(self.resume, 'raw_text') and self.resume.raw_text:
+            return self.resume.raw_text
+
+        # Build from available resume data
+        parts = []
+        if self.resume.skills:
+            parts.append("Skills: " + ", ".join(sorted(self.resume.skills)))
+        if self.resume.role_keywords:
+            parts.append("Roles: " + ", ".join(self.resume.role_keywords))
+        if self.resume.seniority:
+            parts.append(f"Seniority: {self.resume.seniority}")
+        if self.resume.years_experience:
+            parts.append(f"Experience: {self.resume.years_experience} years")
+
+        return "\n".join(parts) if parts else "Software Engineer"

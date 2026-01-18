@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from jobscout.config import JobScoutConfig
 from jobscout.resume_parser import ResumeParser, ParsedResume
 from jobscout.job_sources.base import JobListing
-from jobscout.job_sources.rss_feeds import RemoteOKSource, WeWorkRemotelySource
+from jobscout.job_sources.rss_feeds import RemoteOKSource, WeWorkRemotelySource, HimalayasSource, JavascriptJobsSource
 from jobscout.job_sources.remotive_api import RemotiveSource
 from jobscout.job_sources.boolean_search import BooleanSearchSource
 from jobscout.job_sources.greenhouse_api import GreenhouseSource
@@ -331,7 +331,7 @@ class JobScoutAdapter:
 
         boards = self.config.job_preferences.job_boards
         if not boards:
-            boards = ["remoteok", "weworkremotely", "remotive", "greenhouse", "lever"]
+            boards = ["remoteok", "weworkremotely", "remotive", "himalayas", "jsjobs", "greenhouse", "lever"]
             if self.config.serper_api_key:
                 boards.append("boolean")
 
@@ -356,6 +356,12 @@ class JobScoutAdapter:
         elif board_lower == "weworkremotely":
             source = WeWorkRemotelySource("We Work Remotely")
             return source.fetch_jobs(limit=50)
+        elif board_lower == "himalayas":
+            source = HimalayasSource("Himalayas")
+            return source.fetch_jobs(limit=20)
+        elif board_lower == "jsjobs":
+            source = JavascriptJobsSource("JavaScriptJobs")
+            return source.fetch_jobs(limit=15)
         elif board_lower == "remotive":
             source = RemotiveSource("Remotive")
             return source.fetch_jobs(limit=50)
