@@ -37,6 +37,7 @@ class JobPreferences:
     job_boards: List[str] = field(default_factory=list)  # Empty = use all defaults
     greenhouse_boards: List[str] = field(default_factory=list)
     lever_companies: List[str] = field(default_factory=list)
+    target_companies: Optional[List[str]] = None  # Specific companies to target (for company_boards source)
     max_job_age_days: int = 7
 
 

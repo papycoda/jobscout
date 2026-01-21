@@ -1,9 +1,48 @@
 """Base class for job sources."""
 
+import re
+import html
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional
+
+
+def strip_html_tags(html_content: str) -> str:
+    """
+    Strip HTML tags from a string and return clean plain text.
+
+    Args:
+        html_content: String containing HTML markup
+
+    Returns:
+        Clean plain text with HTML tags removed and entities decoded
+    """
+    if not html_content:
+        return ""
+
+    # Remove script and style tags with their content
+    html_content = re.sub(r'<script[^>]*>.*?</script>', '', html_content, flags=re.IGNORECASE | re.DOTALL)
+    html_content = re.sub(r'<style[^>]*>.*?</style>', '', html_content, flags=re.IGNORECASE | re.DOTALL)
+
+    # Remove HTML tags
+    text = re.sub(r'<[^>]+>', '', html_content)
+
+    # Decode HTML entities
+    text = html.unescape(text)
+
+    # Replace common HTML entities that unescape might miss
+    text = text.replace('&nbsp;', ' ')
+    text = text.replace('&amp;', '&')
+    text = text.replace('&lt;', '<')
+    text = text.replace('&gt;', '>')
+    text = text.replace('&quot;', '"')
+    text = text.replace('&#39;', "'")
+    text = text.replace('&#x27;', "'")
+
+    # Clean up whitespace
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    return '\n'.join(lines)
 
 
 @dataclass

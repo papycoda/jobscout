@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 _transformer_instance = None
 
 
+def _reset_model() -> None:
+    """Reset the global model instance. For testing only."""
+    global _transformer_instance
+    _transformer_instance = None
+
+
 class _HashingSentenceTransformer:
     """Lightweight, offline-friendly embedder using hashed bag-of-words."""
 

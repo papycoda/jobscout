@@ -446,7 +446,7 @@ class JobParser:
         # Extract job roles for filtering
         job_roles = self._extract_job_roles(job)
 
-        return ParsedJob(
+        result = ParsedJob(
             title=job.title,
             company=job.company,
             location=job.location,
@@ -460,6 +460,15 @@ class JobParser:
             job_roles=job_roles,
             posted_date=job.posted_date.isoformat() if job.posted_date else None
         )
+
+        # Log parsed job details
+        logger.debug(f"Parsed: {job.title} at {job.company}")
+        logger.debug(f"  Must-haves: {sorted(must_have) if must_have else 'None'}")
+        logger.debug(f"  Nice-to-haves: {sorted(nice_to_have) if nice_to_have else 'None'}")
+        logger.debug(f"  Roles: {sorted(job_roles) if job_roles else 'None'}")
+        logger.debug(f"  Seniority: {seniority}")
+
+        return result
 
     def _extract_requirements_section(self, full_description: str) -> str:
         """Extract the requirements/qualifications section from description."""

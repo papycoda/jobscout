@@ -4,7 +4,7 @@ import requests
 import logging
 from datetime import datetime
 from typing import List
-from .base import JobSource, JobListing
+from .base import JobSource, JobListing, strip_html_tags
 from .truncation import expand_truncated_jobs
 
 
@@ -35,7 +35,7 @@ class RemotiveSource(JobSource):
                     title = job_data.get('title', '')
                     company = job_data.get('company_name', 'Unknown Company')
                     apply_url = job_data.get('url', '')
-                    description = job_data.get('description', '')
+                    description = strip_html_tags(job_data.get('description', ''))
 
                     # Remotive is 100% remote
                     location = "Remote"

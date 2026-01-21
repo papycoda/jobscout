@@ -4,7 +4,7 @@ import feedparser
 import logging
 from datetime import datetime
 from typing import List
-from .base import JobSource, JobListing
+from .base import JobSource, JobListing, strip_html_tags
 from .truncation import expand_truncated_jobs
 
 
@@ -33,7 +33,7 @@ class RemoteOKSource(JobSource):
 
                     company = entry.get('author', '')
                     apply_url = entry.get('link', '')
-                    description = entry.get('description', '')
+                    description = strip_html_tags(entry.get('description', ''))
 
                     # Extract company from URL if author field is empty
                     # RemoteOK URLs format: https://remoteok.com/remote-jobs/role-name-company-slug-ID
@@ -143,7 +143,7 @@ class WeWorkRemotelySource(JobSource):
                     title = entry.get('title', '')
                     company = entry.get('author', 'Unknown Company')
                     apply_url = entry.get('link', '')
-                    description = entry.get('description', '')
+                    description = strip_html_tags(entry.get('description', ''))
 
                     location = "Remote"
 
@@ -203,7 +203,7 @@ class HimalayasSource(JobSource):
                             company = 'Unknown Company'
 
                     apply_url = entry.get('link', '')
-                    description = entry.get('description', '')
+                    description = strip_html_tags(entry.get('description', ''))
 
                     # Parse date
                     posted_date = None
@@ -251,7 +251,7 @@ class JavascriptJobsSource(JobSource):
 
                     company = entry.get('author', 'Unknown Company')
                     apply_url = entry.get('link', '')
-                    description = entry.get('description', '')
+                    description = strip_html_tags(entry.get('description', ''))
 
                     # Parse date
                     posted_date = None

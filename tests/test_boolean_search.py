@@ -19,9 +19,13 @@ def test_boolean_query_includes_filters():
     queries = source._build_boolean_queries()
 
     assert queries
-    assert any("site:boards.greenhouse.io" in q for q in queries)
-    assert any("site:jobs.lever.co" in q for q in queries)
-    assert any("site:jobs.breezy.hr" in q for q in queries)
+    # Check that domains are in the site:(...) clause format
+    assert any("boards.greenhouse.io" in q for q in queries)
+    assert any("jobs.lever.co" in q for q in queries)
+    assert any("jobs.breezy.hr" in q for q in queries)
+    assert any("jobs.ashbyhq.com" in q for q in queries)
+    # Verify the site: clause exists with proper grouping
+    assert any("site:(" in q for q in queries)
     assert all('after:2025-01-03' in q for q in queries)
     assert all('"remote"' in q for q in queries)
     assert any('-"senior"' in q for q in queries)

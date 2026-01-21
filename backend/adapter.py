@@ -211,10 +211,22 @@ class JobScoutAdapter:
         else:
             logger.info(f"Parsing resume from {config.resume_path}")
             self.resume = self.resume_parser.parse(config.resume_path)
-        logger.info(f"Extracted {len(self.resume.skills)} skills from resume")
 
         # Build preferred stack
         preferred_stack = set(config.job_preferences.preferred_tech_stack)
+
+        # Log detailed resume info
+        logger.info("=" * 60)
+        logger.info("RESUME ANALYSIS")
+        logger.info("=" * 60)
+        logger.info(f"Skills ({len(self.resume.skills)}): {', '.join(sorted(self.resume.skills))}")
+        logger.info(f"Seniority: {self.resume.seniority}")
+        logger.info(f"Years Experience: {self.resume.years_experience}")
+        logger.info(f"Role Keywords: {', '.join(self.resume.role_keywords) if self.resume.role_keywords else 'None'}")
+        logger.info(f"Preferred Stack: {', '.join(preferred_stack) if preferred_stack else 'None'}")
+        logger.info(f"Min Score Threshold: {config.min_score_threshold}%")
+        logger.info(f"Soft Language Gate: {config.soft_language_gate}")
+        logger.info("=" * 60)
 
         # Initialize scorer
         self.scorer = JobScorer(self.resume, config, preferred_stack)
@@ -646,3 +658,31 @@ class JobScoutAdapter:
         Returns: (digest_id, mode)
         """
         return send_email_digest_from_jobs(jobs_json, self.config, outbox_mode=outbox_mode)
+
+    def get_resume_profile(self) -> Dict:
+        """
+        Get the parsed resume profile details.
+
+        Returns a dict with skills, seniority, roles, etc.
+        """
+        from jobscout.scoring import ROLE_SKILL_HINTS
+
+        # Infer roles from skills
+        inferred_roles = set()
+        for role, hints in ROLE_SKILL_HINTS.items():
+            if self.resume.skills & hints:
+                inferred_roles.add(role)
+
+        return {
+            "skills": sorted(self.resume.skills),
+            "seniority": self.resume.seniority,
+            "years_experience": self.resume.years_experience,
+            "role_keywords": self.resume.role_keywords,
+            "inferred_roles": sorted(inferred_roles),
+            "preferred_stack": sorted(self.config.job_preferences.preferred_tech_stack),
+            "config": {
+                "min_score_threshold": self.config.min_score_threshold,
+                "soft_language_gate": self.config.soft_language_gate,
+                "location_preference": self.config.job_preferences.location_preference,
+            }
+        }

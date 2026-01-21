@@ -112,6 +112,10 @@ class LLMJobParser:
             )
             logger.info(f"LLM parsing successful (confidence: {llm_result.confidence:.2f})")
 
+            # Merge title skills with LLM-extracted must-haves
+            # Title skills are the most reliable indicator and should always be included
+            final_must_haves = llm_result.must_have_skills | title_skills
+
             return ParsedJob(
                 title=job_metadata.get("title", "Unknown") if job_metadata else "Unknown",
                 company=job_metadata.get("company", "Unknown") if job_metadata else "Unknown",
@@ -119,7 +123,7 @@ class LLMJobParser:
                 description=job_description,
                 apply_url=job_metadata.get("apply_url", "") if job_metadata else "",
                 source=job_metadata.get("source", "LLM") if job_metadata else "LLM",
-                must_have_skills=llm_result.must_have_skills,
+                must_have_skills=final_must_haves,
                 nice_to_have_skills=llm_result.nice_to_have_skills,
                 min_years_experience=llm_result.min_years_experience,
                 seniority_level=llm_result.seniority_level,

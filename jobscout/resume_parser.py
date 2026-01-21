@@ -2,12 +2,16 @@
 
 import re
 import io
+import logging
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Set, Dict, Optional, Tuple
 import docx
 import pdfplumber
+
+
+logger = logging.getLogger(__name__)
 
 
 # Canonical skill dictionary for matching
@@ -270,20 +274,32 @@ class ResumeParser:
 
     def _extract_from_text(self, text: str) -> ParsedResume:
         """Extract skills and metadata from text."""
+        logger.info("=" * 60)
+        logger.info("RESUME PARSING - Starting extraction")
+        logger.info("=" * 60)
+
         # Extract skills using canonical dictionary
         found_skills = set()
         for canonical, pattern in self.patterns.items():
             if pattern.search(text):
                 found_skills.add(canonical)
 
+        logger.info(f"EXTRACTED SKILLS ({len(found_skills)}):")
+        logger.info(f"  {', '.join(sorted(found_skills))}")
+
         # Extract years of experience
         years = self._extract_years_experience(text)
+        logger.info(f"EXTRACTED EXPERIENCE: {years} years")
 
         # Infer seniority
         seniority = self._infer_seniority(text, years)
+        logger.info(f"EXTRACTED SENIORITY: {seniority}")
 
         # Extract role keywords
         role_keywords = self._extract_role_keywords(text)
+        logger.info(f"EXTRACTED ROLES: {', '.join(role_keywords) if role_keywords else 'None detected'}")
+
+        logger.info("=" * 60)
 
         return ParsedResume(
             raw_text=text,

@@ -211,6 +211,7 @@ class HardExclusionFilters:
             return f"Description too short and incomplete ({len(description)} chars)"
 
         # Check for incomplete section headers - this is the strongest signal
+        # Only flag if section header is near the END (within ~150 chars) meaning no content follows
         incomplete_patterns = [
             r'what you\'?ll bring\s*:\s*$',
             r'what you bring\s*:\s*$',
@@ -226,8 +227,12 @@ class HardExclusionFilters:
 
         description_lower = description.lower()
         for pattern in incomplete_patterns:
-            if re.search(pattern, description_lower, re.MULTILINE):
-                return "Description truncated (missing requirements section)"
+            # Find all matches of this pattern
+            for match in re.finditer(pattern, description_lower, re.MULTILINE):
+                # Only flag if this header is in the last ~150 chars of the description
+                # (meaning no meaningful content follows)
+                if match.start() > len(description_lower) - 150:
+                    return "Description truncated (section header at end without content)"
 
         # Check if description ends mid-sentence or mid-word (strong truncation signal)
         stripped = description.strip()

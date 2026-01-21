@@ -163,3 +163,21 @@ class MetricsResponse(BaseModel):
     recent_searches: List[dict]
     avg_jobs_per_search: float
     avg_match_rate: float
+
+
+# Resume Profile
+class UserPreferences(BaseModel):
+    location_preference: str = "remote"
+    max_job_age_days: int = 7
+    min_score_threshold: float = 60.0
+    preferred_tech_stack: List[str] = []
+
+
+class ResumeProfileRequest(BaseModel):
+    profile: dict  # Parsed resume data from upload-resume
+    preferences: Optional[UserPreferences] = None
+
+
+class ResumeProfileResponse(BaseModel):
+    profile: dict
+    description: str

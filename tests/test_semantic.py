@@ -4,6 +4,7 @@ import os
 import pytest
 from jobscout.semantic import (
     _get_model,
+    _reset_model,
     compute_embeddings,
     compute_similarity,
     compute_semantic_match_score,
@@ -17,6 +18,14 @@ def force_offline_mode(monkeypatch):
     """Avoid heavyweight model downloads during tests."""
     if "JOBSCOUT_SKIP_SEMANTIC_DOWNLOAD" not in os.environ:
         monkeypatch.setenv("JOBSCOUT_SKIP_SEMANTIC_DOWNLOAD", "1")
+
+
+@pytest.fixture(autouse=True)
+def reset_global_model():
+    """Reset global model instance between tests."""
+    _reset_model()
+    yield
+    _reset_model()
 
 
 @pytest.fixture(scope="module")
@@ -131,9 +140,12 @@ class TestSemanticMatchScore:
         if score is not None:
             assert score == pytest.approx(1.0, rel=0.01)
 
-    def test_highly_similar_technologies(self, using_fallback_model):
+    def test_highly_similar_technologies(self):
         """Similar technical content should score high."""
-        if using_fallback_model:
+        scorer = SemanticScorer()
+        if not scorer.is_enabled():
+            pytest.skip("Sentence transformers not available")
+        if scorer._using_fallback:
             pytest.skip("Fallback embedder provides approximate similarity only")
 
         resume = "Senior Python developer with Django and PostgreSQL"
@@ -296,14 +308,13 @@ class TestQuickMatch:
 class TestSemanticScenarios:
     """Real-world semantic matching scenarios."""
 
-    def test_synonymous_technology_terms(self, using_fallback_model):
+    def test_synonymous_technology_terms(self):
         """Should recognize synonymous tech terms."""
-        if using_fallback_model:
-            pytest.skip("Fallback embedder is offline-only and less nuanced")
-
         scorer = SemanticScorer()
         if not scorer.is_enabled():
             pytest.skip("Sentence transformers not available")
+        if scorer._using_fallback:
+            pytest.skip("Fallback embedder is offline-only and less nuanced")
 
         resume = "JavaScript developer with React"
         job = "JS frontend engineer using React library"
@@ -311,14 +322,13 @@ class TestSemanticScenarios:
         scores = scorer.compute_semantic_scores(resume, [job])
         assert scores[0] > 0.6  # Should be reasonably similar
 
-    def test_role_vs_tools_priority(self, using_fallback_model):
+    def test_role_vs_tools_priority(self):
         """Should weight role alignment over tool similarity."""
-        if using_fallback_model:
-            pytest.skip("Fallback embedder is offline-only and less nuanced")
-
         scorer = SemanticScorer()
         if not scorer.is_enabled():
             pytest.skip("Sentence transformers not available")
+        if scorer._using_fallback:
+            pytest.skip("Fallback embedder is offline-only and less nuanced")
 
         resume = "Backend Python developer"
         jobs = [
@@ -330,14 +340,13 @@ class TestSemanticScenarios:
         # Backend match should be higher than frontend
         assert scores[0] > scores[1]
 
-    def test_experience_level_semantics(self, using_fallback_model):
+    def test_experience_level_semantics(self):
         """Should detect experience level differences."""
-        if using_fallback_model:
-            pytest.skip("Fallback embedder is offline-only and less nuanced")
-
         scorer = SemanticScorer()
         if not scorer.is_enabled():
             pytest.skip("Sentence transformers not available")
+        if scorer._using_fallback:
+            pytest.skip("Fallback embedder is offline-only and less nuanced")
 
         resume = "Senior Python developer with 8 years experience"
         jobs = [

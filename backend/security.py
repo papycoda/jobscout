@@ -144,7 +144,9 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         """Verify API key if required."""
-        # Skip auth for health check and public endpoints
+        # Skip auth for OPTIONS preflight requests, health check, and public endpoints
+        if request.method == "OPTIONS":
+            return await call_next(request)
         if request.url.path in ["/health", "/api/health", "/debug"]:
             return await call_next(request)
 

@@ -56,13 +56,8 @@ app = FastAPI(
 )
 
 
-# Security middleware (added before CORS for proper execution order)
-app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(APIKeyAuthMiddleware)
-app.add_middleware(RateLimitMiddleware)
-
-# CORS configuration (with improved security)
-cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:8080,https://jobscoutpro.netlify.app").split(",")
+# CORS configuration (MUST be first to handle OPTIONS preflight)
+cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:8080,http://localhost:8081,http://localhost:8082,https://jobscoutpro.netlify.app").split(",")
 # Validate and sanitize CORS origins
 valid_origins = []
 for origin in cors_origins:
@@ -76,9 +71,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=valid_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],  # Restrict methods
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # Include OPTIONS for preflight
     allow_headers=["*"],
 )
+
+# Security middleware (added AFTER CORS so CORS can handle preflight first)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(APIKeyAuthMiddleware)
+app.add_middleware(RateLimitMiddleware)
 
 
 @app.on_event("startup")
@@ -530,6 +530,87 @@ async def update_config(request: ConfigUpdateRequest):
     )
 
 
+@app.post("/api/resume-profile", response_model=ResumeProfileResponse)
+async def get_resume_profile(
+    resume: Optional[UploadFile] = File(None),
+    profile_data: Optional[str] = Query(None, description="JSON string of profile data (alternative to resume file)"),
+    preferences: Optional[str] = Query(None, description="JSON string of preferences")
+):
+    """
+    Get the parsed resume profile details for debugging.
+
+    Accepts either:
+    1. A resume file (PDF/DOCX/TXT) uploaded directly
+    2. Profile data as JSON string (from upload-resume result)
+
+    Returns skills, seniority, roles, and config that were extracted from the resume.
+    """
+    try:
+        import json
+
+        # Parse preferences
+        user_prefs = None
+        if preferences:
+            try:
+                user_prefs = json.loads(preferences)
+            except:
+                pass
+
+        # Create a minimal config for parsing
+        config = create_config_from_env()
+
+        # Apply preferences from request
+        if user_prefs:
+            config.job_preferences.location_preference = user_prefs.get("location_preference", "remote")
+            config.job_preferences.max_job_age_days = user_prefs.get("max_job_age_days", 7)
+            config.min_score_threshold = user_prefs.get("min_score_threshold", 60.0)
+            if user_prefs.get("preferred_tech_stack"):
+                config.job_preferences.preferred_tech_stack = user_prefs.get("preferred_tech_stack")
+
+        # If resume file is provided, parse it
+        if resume:
+            # Save uploaded file temporarily
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(resume.filename).suffix) as tmp:
+                content = await resume.read()
+                tmp.write(content)
+                tmp_path = tmp.name
+
+            config.resume_path = tmp_path
+            adapter = JobScoutAdapter(config)
+            profile = adapter.get_resume_profile()
+
+            # Clean up temp file
+            import os
+            os.unlink(tmp_path)
+        else:
+            # Use profile data from request
+            if not profile_data:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Either resume file or profile_data must be provided"
+                )
+            profile_dict = json.loads(profile_data)
+            from backend.adapter import _resume_from_profile
+            resume_profile = _resume_from_profile(profile_dict)
+            adapter = JobScoutAdapter(config, resume_profile=profile_dict)
+            profile = adapter.get_resume_profile()
+
+        return {
+            "profile": profile,
+            "description": "Parsed resume details. Use this to debug what the system extracted from your CV."
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get resume profile: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to parse resume: {str(e)}"
+        )
+
+
 @app.post("/api/search-legacy", response_model=SearchResponse)
 async def run_search_legacy():
     """
@@ -827,6 +908,11 @@ async def search_jobs(request: dict):
 
         logger.info(f"Total jobs fetched: {len(all_jobs)}")
 
+        # Expand truncated job descriptions (fetch full content from source pages)
+        from jobscout.job_sources.truncation import expand_truncated_jobs
+        all_jobs = expand_truncated_jobs(all_jobs)
+        logger.info(f"After expansion: {len(all_jobs)} jobs")
+
         # Parse jobs using smart hybrid approach
         from jobscout.job_parser import JobParser
         from jobscout.config import JobScoutConfig
@@ -882,6 +968,16 @@ async def search_jobs(request: dict):
             user_roles=user_role_categories if user_role_categories else None
         )
 
+        # Log scoring details
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info(f"SCORING {len(parsed_jobs)} JOBS")
+        logger.info("=" * 60)
+        logger.info(f"Candidate Skills ({len(user_skills | preferred_stack)}): {', '.join(sorted(user_skills | preferred_stack)[:20])}{'...' if len(user_skills | preferred_stack) > 20 else ''}")
+        logger.info(f"Candidate Roles: {', '.join(sorted(user_role_categories)) if user_role_categories else 'None'}")
+        logger.info(f"Min Score Threshold: {min_threshold}%")
+        logger.info("")
+
         # Process each job
         matched_jobs = []
         filtered_jobs = []
@@ -900,46 +996,73 @@ async def search_jobs(request: dict):
                 reasons.append(exclusion_reason)
                 is_matched = False
 
-            # Score the job if it passed hard filters
+            # Always score the job (need is_apply_ready which includes all checks)
+            scored = scorer._score_job(job)
+            score = scored.score
+
+            # If job passed hard filters, apply full scoring checks
             if is_matched:
-                scored = scorer._score_job(job)
-                score = scored.score
+                # Use the pre-computed is_apply_ready from ScoredJob
+                # This includes seniority check, title skill gate, role mismatch, etc.
+                is_matched = scored.is_apply_ready
 
-                # Check if apply-ready (FIX: proper must-have logic + minimum skill count)
-                must_have_coverage = scored.must_have_coverage
-                has_must_haves = len(job.must_have_skills) > 0
+                # If not matched, generate reasons for logging
+                if not is_matched:
+                    must_have_coverage = scored.must_have_coverage
+                    has_must_haves = len(job.must_have_skills) > 0
 
-                # Calculate total matching skills (must-have + nice-to-have)
-                all_job_skills = job.must_have_skills | job.nice_to_have_skills
-                all_user_skills = user_skills | preferred_stack
-                matching_skills = all_job_skills & all_user_skills
-                matching_count = len(matching_skills)
+                    # Calculate total matching skills (must-have + nice-to-have)
+                    all_job_skills = job.must_have_skills | job.nice_to_have_skills
+                    all_user_skills = user_skills | preferred_stack
+                    matching_skills = all_job_skills & all_user_skills
+                    matching_count = len(matching_skills)
 
-                # Require at least 2 matching skills
-                min_matching_skills = 2
-
-                # If no must-haves, use fallback threshold
-                if not has_must_haves:
+                    # Generate reasons based on why it failed
                     if score < min_threshold:
                         reasons.append(f"Score below threshold ({score:.0f}% < {min_threshold}%)")
-                        is_matched = False
 
-                    if matching_count < min_matching_skills:
-                        reasons.append(f"Not enough matching skills ({matching_count} < {min_matching_skills})")
-                        is_matched = False
-                else:
-                    # Normal case: check score, coverage, AND matching skill count
-                    if score < min_threshold:
-                        reasons.append(f"Score below threshold ({score:.0f}% < {min_threshold}%)")
-                        is_matched = False
-
-                    if must_have_coverage < 0.6:
+                    if has_must_haves and must_have_coverage < 0.6:
                         reasons.append(f"Must-have coverage too low ({must_have_coverage:.0%} < 60%)")
-                        is_matched = False
 
-                    if matching_count < min_matching_skills:
-                        reasons.append(f"Not enough matching skills ({matching_count} < {min_matching_skills})")
-                        is_matched = False
+                    if matching_count < 2:
+                        reasons.append(f"Not enough matching skills ({matching_count} < 2)")
+
+                    # Check for role mismatch
+                    job_roles = scorer._get_job_roles(job)
+                    if job_roles and scorer.candidate_roles:
+                        role_overlap = job_roles & scorer.candidate_roles
+                        is_compatible_fullstack = (
+                            "fullstack" in job_roles and ("backend" in scorer.candidate_roles or "frontend" in scorer.candidate_roles)
+                        ) or (
+                            "fullstack" in scorer.candidate_roles and ("backend" in job_roles or "frontend" in job_roles)
+                        )
+                        if not role_overlap and not is_compatible_fullstack:
+                            reasons.append(f"Role mismatch (job: {', '.join(sorted(job_roles))}, you: {', '.join(sorted(scorer.candidate_roles))})")
+
+                    # Check for seniority mismatch
+                    if job.seniority_level == "junior" and resume.seniority == "senior":
+                        reasons.append(f"Seniority mismatch (job is junior/intern, you are senior)")
+
+                    # Check for title skill gate
+                    title_skill = scorer._extract_title_skill(job.title, job.description)
+                    if title_skill and title_skill not in all_user_skills:
+                        reasons.append(f"Missing title core skill '{title_skill}'")
+
+            # Log job evaluation result
+            status = "PASS" if is_matched else "REJECT"
+            score_str = f"{score:.0f}%" if score is not None else "N/A"
+            logger.info(f"{status}: {job.title} at {job.company} (score: {score_str})")
+            if not is_matched:
+                if reasons:
+                    logger.info(f"  Reasons: {'; '.join(reasons)}")
+                else:
+                    # Show missing title skill if that's why it failed
+                    title_skill = scorer._extract_title_skill(job.title, job.description)
+                    if title_skill and title_skill not in (user_skills | preferred_stack):
+                        logger.info(f"  Missing title core skill: {title_skill}")
+                    # Show seniority mismatch
+                    elif job.seniority_level == "junior" and resume.seniority == "senior":
+                        logger.info(f"  Seniority mismatch: job is junior/intern, you are senior")
 
             # Create job dict
             job_id = hashlib.sha256(job.apply_url.encode()).hexdigest()[:16]
@@ -1024,6 +1147,34 @@ async def search_jobs(request: dict):
                 # Track filter reasons
                 for reason in reasons:
                     filter_reason_counts[reason] = filter_reason_counts.get(reason, 0) + 1
+
+        # Log scoring summary
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("SCORING SUMMARY")
+        logger.info("=" * 60)
+        logger.info(f"Total Jobs: {len(parsed_jobs)}")
+        logger.info(f"Apply-Ready: {len(matched_jobs)}")
+        logger.info(f"Rejected: {len(filtered_jobs)}")
+
+        if matched_jobs:
+            logger.info("")
+            logger.info("APPLY-READY JOBS:")
+            for i, job in enumerate(matched_jobs[:10], 1):
+                must_haves = job.get("must_have", {}).get("matched", [])
+                logger.info(f"  {i}. {job['title']} at {job['company']}")
+                logger.info(f"     Score: {job['score_total']}% | Must-haves: {', '.join(must_haves) if must_haves else 'None'}")
+
+        if filtered_jobs:
+            logger.info("")
+            logger.info("REJECTED JOBS (showing first 10 with reasons):")
+            for job in filtered_jobs[:10]:
+                reasons_str = "; ".join(job.get("reasons", ["Unknown"]))
+                logger.info(f"  - {job['title']} at {job['company']} ({job.get('score_total')}% )")
+                logger.info(f"    Reason: {reasons_str}")
+
+        logger.info("=" * 60)
+        logger.info("")
 
         # Sort matched jobs by score
         matched_jobs.sort(key=lambda j: j.get("score_total", 0), reverse=True)

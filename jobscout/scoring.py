@@ -30,7 +30,7 @@ ROLE_KEYWORDS: Dict[str, List[str]] = {
     "fullstack": ["fullstack", "full-stack", "full stack"],
     "devops": ["devops", "sre", "site reliability", "platform engineer"],
     "data": ["data engineer", "data scientist", "machine learning", "ml engineer", "analytics"],
-    "mobile": ["mobile developer", "ios developer", "android developer"],
+    "mobile": ["mobile developer", "mobile engineer", "ios developer", "android developer"],
 }
 ROLE_SKILL_HINTS: Dict[str, Set[str]] = {
     "backend": {
@@ -122,6 +122,16 @@ class JobScorer:
 
     def score_jobs(self, jobs: List[ParsedJob]) -> List[ScoredJob]:
         """Score all jobs and return apply-ready ones."""
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info(f"SCORING {len(jobs)} JOBS")
+        logger.info("=" * 60)
+        logger.info(f"Candidate Skills: {', '.join(sorted(self.all_candidate_skills)[:20])}{'...' if len(self.all_candidate_skills) > 20 else ''}")
+        logger.info(f"Candidate Roles: {', '.join(sorted(self.candidate_roles))}")
+        logger.info(f"Min Score Threshold: {self.config.min_score_threshold}%")
+        logger.info(f"Soft Language Gate: {self.config.soft_language_gate}")
+        logger.info("")
+
         # Step 1: Compute semantic scores in batch (if enabled)
         semantic_scores = None
         if self.semantic_scorer and self.semantic_scorer.is_enabled():
@@ -136,6 +146,7 @@ class JobScorer:
                 semantic_scores = None
 
         scored_jobs = []
+        rejected_jobs = []
 
         for i, job in enumerate(jobs):
             semantic_score = semantic_scores[i] if semantic_scores else None
@@ -143,16 +154,57 @@ class JobScorer:
             if scored.is_apply_ready:
                 scored_jobs.append(scored)
             else:
-                logger.debug(
-                    f"Job '{job.title}' at {job.company} scored {scored.score:.1f}% "
-                    f"(below threshold or must-have coverage too low)"
-                )
+                rejected_jobs.append(scored)
 
         # Sort by score descending
         scored_jobs.sort(key=lambda j: j.score, reverse=True)
 
-        logger.info(f"Found {len(scored_jobs)} apply-ready jobs")
+        # Log summary
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("SCORING SUMMARY")
+        logger.info("=" * 60)
+        logger.info(f"Total Jobs: {len(jobs)}")
+        logger.info(f"Apply-Ready: {len(scored_jobs)}")
+        logger.info(f"Rejected: {len(rejected_jobs)}")
+
+        if scored_jobs:
+            logger.info("")
+            logger.info("APPLY-READY JOBS:")
+            for i, job in enumerate(scored_jobs[:10], 1):
+                logger.info(f"  {i}. {job.job.title} at {job.job.company}")
+                logger.info(f"     Score: {job.score:.1f}% | Must-haves: {', '.join(sorted(job.job.must_have_skills)) if job.job.must_have_skills else 'None'}")
+
+        if rejected_jobs:
+            logger.info("")
+            logger.info("REJECTED JOBS (showing first 10 with reasons):")
+            for job in rejected_jobs[:10]:
+                reason = self._get_rejection_reason(job)
+                logger.info(f"  - {job.job.title} at {job.job.company} ({job.score:.1f}%)")
+                logger.info(f"    Reason: {reason}")
+
+        logger.info("=" * 60)
+        logger.info("")
+
         return scored_jobs
+
+    def _get_rejection_reason(self, scored_job: ScoredJob) -> str:
+        """Get human-readable reason why job was rejected."""
+        reasons = []
+
+        if scored_job.score < self.config.min_score_threshold:
+            reasons.append(f"Score {scored_job.score:.1f}% < {self.config.min_score_threshold}% threshold")
+
+        if scored_job.must_have_coverage < 0.6 and scored_job.job.must_have_skills:
+            reasons.append(f"Must-have coverage {scored_job.must_have_coverage*100:.0f}% < 60%")
+
+        if scored_job.missing_must_haves:
+            reasons.append(f"Missing must-haves: {', '.join(sorted(scored_job.missing_must_haves))}")
+
+        if not reasons:
+            reasons.append("Role mismatch or other filter")
+
+        return "; ".join(reasons)
 
     def _score_job(self, job: ParsedJob, semantic_score: Optional[float] = None) -> ScoredJob:
         """Score a single job."""
@@ -437,6 +489,9 @@ class JobScorer:
             # Language + Framework combos (most specific)
             ("ruby on rails", "ruby"),
             ("ruby/rails", "ruby"),
+            (" rails ", "ruby"),  # "Rails Engineer" -> ruby
+            (" rails.", "ruby"),  # "Rails." -> ruby
+            (" rails,", "ruby"),  # "Rails," -> ruby
             ("node.js", "javascript"),
             ("nodejs", "javascript"),
             ("next.js", "nextjs"),

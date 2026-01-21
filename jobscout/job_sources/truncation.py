@@ -14,8 +14,11 @@ _HEADERS = {
 }
 
 # Site-specific selectors for full job descriptions
+# Ordered from most specific to most general
 _DESCRIPTION_SELECTORS = {
     "remoteok.com": [
+        "#job",
+        ".description",
         "div.description",
         "div.job_description",
         "div[id^=job]",
@@ -23,25 +26,40 @@ _DESCRIPTION_SELECTORS = {
         "main",
     ],
     "weworkremotely.com": [
+        ".listing",
+        ".listing-container",
         "div.listing-container",
+        ".description",
         "div.description",
         "section.listing-description",
         "article",
     ],
     "remotive.com": [
+        ".job-description",
         "div.job-description",
+        ".description",
         "div.description",
         "section.job",
         "article",
     ],
+    "himalayas.app": [
+        "[class*='description']",
+        "[class*='job']",
+        "article",
+        "main",
+    ],
     "boards.greenhouse.io": [
+        ".content",
         "div.content",
+        ".job-description",
         "div.job-description",
-        "div[id='content']",
+        "#content",
         "main",
     ],
     "jobs.lever.co": [
+        ".posting-section",
         "div.posting-section",
+        ".posting-description",
         "div.posting-description",
         "section.description",
         "main",
@@ -129,39 +147,51 @@ def fetch_full_description(url: str, current_description: str = "") -> Optional[
 
     # Determine domain for selector selection
     domain = _extract_domain(url)
-    selectors = _DESCRIPTION_SELECTORS.get(domain, ["article", "main", "div.job-description", "div.description"])
+    selectors = _DESCRIPTION_SELECTORS.get(domain, [
+        "#job",
+        "article",
+        "main",
+        "div.job-description",
+        "div.description",
+        ".description",
+        ".job-description",
+        "section",
+    ])
 
     try:
-        response = requests.get(url, headers=_HEADERS, timeout=10)
+        response = requests.get(url, headers=_HEADERS, timeout=15)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "lxml")
 
+        best_text = None
+        best_length = len(current_description) if current_description else 0
+
         # Try each selector
         for selector in selectors:
-            elements = soup.select(selector)
-            if elements:
-                # Get the first matching element
-                element = elements[0]
-                text = element.get_text(separator='\n', strip=True)
+            try:
+                elements = soup.select(selector)
+                if elements:
+                    # Get the first matching element
+                    element = elements[0]
+                    text = _clean_extracted_text(element)
 
-                if text and len(text) > len(current_description):
-                    logger.debug(f"Fetched full description from {url} using selector '{selector}': {len(text)} chars")
-                    return text
+                    if text and len(text) > best_length:
+                        best_text = text
+                        best_length = len(text)
+                        logger.debug(f"Fetched description from {url} using '{selector}': {len(text)} chars")
+            except Exception:
+                continue
 
-        # Fallback: try to find any div with substantial text
-        for div in soup.find_all('div'):
-            text = div.get_text(separator='\n', strip=True)
-            if text and len(text) > 1000:  # Substantial content
-                # Check if it looks like job description
-                text_lower = text.lower()
-                if any(keyword in text_lower for keyword in [
-                    'requirements', 'qualifications', 'responsibilities',
-                    'skills', 'experience', 'you will', 'you have'
-                ]):
-                    logger.debug(f"Fetched full description from {url} using fallback div: {len(text)} chars")
-                    return text
+        # Enhanced fallback: try to find the largest text block that looks like a job description
+        if not best_text or best_length < 500:
+            best_text = _fallback_find_description(soup, current_description, best_text or "")
+            if best_text:
+                best_length = len(best_text)
 
-        logger.warning(f"Could not extract full description from {url}")
+        if best_text and best_length > len(current_description):
+            return best_text
+
+        logger.warning(f"Could not extract better description from {url} (current: {len(current_description)}, best: {best_length})")
         return None
 
     except requests.RequestException as e:
@@ -170,6 +200,64 @@ def fetch_full_description(url: str, current_description: str = "") -> Optional[
     except Exception as e:
         logger.warning(f"Error parsing HTML from {url}: {e}")
         return None
+
+
+def _clean_extracted_text(element) -> str:
+    """Clean and extract text from a BeautifulSoup element."""
+    # Remove script and style elements
+    for script in element(["script", "style", "nav", "header", "footer", "aside"]):
+        script.decompose()
+
+    text = element.get_text(separator='\n', strip=True)
+
+    # Clean up extra whitespace
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    return '\n'.join(lines)
+
+
+def _fallback_find_description(soup, current_description: str, current_best: str) -> Optional[str]:
+    """
+    Fallback method to find job description by analyzing all text blocks.
+
+    Looks for the largest text block that contains job-related keywords.
+    """
+    job_keywords = [
+        'requirements', 'qualifications', 'responsibilities',
+        'skills', 'experience', 'you will', 'you have',
+        'what you', 'about the', 'we are looking',
+        'role', 'position', 'team', 'company'
+    ]
+
+    candidates = []
+
+    # Check all common container types
+    for tag in ['div', 'section', 'article', 'main']:
+        for element in soup.find_all(tag, limit=50):  # Limit to avoid excessive processing
+            text = _clean_extracted_text(element)
+
+            # Skip if too short or too long (likely not the job description)
+            if len(text) < 200 or len(text) > 20000:
+                continue
+
+            # Check for job-related keywords
+            text_lower = text.lower()
+            keyword_count = sum(1 for kw in job_keywords if kw in text_lower)
+
+            # Skip if no job keywords found
+            if keyword_count == 0:
+                continue
+
+            candidates.append((text, keyword_count, len(text)))
+
+    # Sort by keyword count (desc), then by length (desc)
+    candidates.sort(key=lambda x: (x[1], x[2]), reverse=True)
+
+    if candidates:
+        best = candidates[0][0]
+        logger.debug(f"Fallback found description with {candidates[0][1]} keywords: {len(best)} chars")
+        return best
+
+    return current_best if len(current_best) > len(current_description) else None
 
 
 def _extract_domain(url: str) -> str:
@@ -186,6 +274,11 @@ def expand_truncated_jobs(jobs: list) -> list:
     """
     Expand truncated job descriptions by fetching full page content.
 
+    This function is more aggressive than just checking for truncation -
+    it will attempt to fetch full descriptions for any job that has:
+    - A clearly truncated description (ends with ..., section header at end, etc.)
+    - A short description (< 1000 chars) that might be insufficient for proper matching
+
     Args:
         jobs: List of JobListing objects
 
@@ -196,12 +289,24 @@ def expand_truncated_jobs(jobs: list) -> list:
 
     expanded_jobs = []
     expanded_count = 0
+    attempted_count = 0
 
     for job in jobs:
         description = job.description
+        should_fetch = False
 
-        if is_truncated(description):
-            logger.debug(f"Job '{job.title}' at {job.company} appears truncated, fetching full description")
+        # Check if clearly truncated (using lower threshold)
+        if is_truncated(description, min_length=300):
+            should_fetch = True
+            logger.debug(f"Job '{job.title}' at {job.company} appears truncated")
+        # Also try to fetch if description is short but might be just an RSS summary
+        # (Under 1000 chars is likely insufficient for good skill matching)
+        elif len(description) < 1000:
+            should_fetch = True
+            logger.debug(f"Job '{job.title}' at {job.company} has short description ({len(description)} chars), attempting expansion")
+
+        if should_fetch:
+            attempted_count += 1
             full_desc = fetch_full_description(job.apply_url, description)
 
             if full_desc:
@@ -217,13 +322,14 @@ def expand_truncated_jobs(jobs: list) -> list:
                 )
                 expanded_jobs.append(expanded_job)
                 expanded_count += 1
+                logger.info(f"Expanded '{job.title}': {len(description)} → {len(full_desc)} chars")
             else:
                 # Keep original if fetch failed
                 expanded_jobs.append(job)
         else:
             expanded_jobs.append(job)
 
-    if expanded_count > 0:
-        logger.info(f"Expanded {expanded_count}/{len(jobs)} truncated job descriptions")
+    if attempted_count > 0:
+        logger.info(f"Expanded {expanded_count}/{attempted_count} job descriptions (out of {len(jobs)} total)")
 
     return expanded_jobs

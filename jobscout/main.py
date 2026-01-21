@@ -10,6 +10,7 @@ from .job_sources.remotive_api import RemotiveSource
 from .job_sources.boolean_search import BooleanSearchSource
 from .job_sources.greenhouse_api import GreenhouseSource
 from .job_sources.lever_api import LeverSource
+from .job_sources.company_boards import CompanyBoardsSource
 from .job_parser import JobParser
 from .filters import HardExclusionFilters
 from .scoring import JobScorer
@@ -160,15 +161,17 @@ class JobScout:
         all_jobs = []
 
         # Default sources if none specified
+        # Company boards is now the DEFAULT (free, targeted, no API key needed)
         boards = self.config.job_preferences.job_boards
         if not boards:
-            boards = ["remoteok", "weworkremotely", "remotive", "himalayas", "jsjobs"]
+            boards = ["company_boards"]  # Primary: direct company board scraping
+            boards.extend(["remoteok", "weworkremotely", "remotive"])  # Secondary: RSS feeds
             if self.config.job_preferences.greenhouse_boards:
                 boards.append("greenhouse")
             if self.config.job_preferences.lever_companies:
                 boards.append("lever")
             if self.config.serper_api_key:
-                boards.append("boolean")
+                boards.append("boolean")  # Optional: Serper API for broader search
 
         # Fetch from each source
         for board in boards:
@@ -222,6 +225,16 @@ class JobScout:
                 serper_api_key=self.config.serper_api_key
             )
             return source.fetch_jobs(limit=30)
+
+        elif board_lower == "company_boards":
+            source = CompanyBoardsSource(
+                resume_skills=self.resume.skills,
+                role_keywords=self.role_keywords_for_search,
+                location_preference=self.config.job_preferences.location_preference,
+                max_job_age_days=self.config.job_preferences.max_job_age_days,
+                companies=getattr(self.config.job_preferences, 'target_companies', None)
+            )
+            return source.fetch_jobs(limit=50)
 
         else:
             logger.warning(f"Unknown job board: {board}")
