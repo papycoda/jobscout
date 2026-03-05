@@ -365,7 +365,7 @@ async def upload_resume(file: UploadFile = File(...)):
     """
     Upload and parse a resume file (stateless - no disk storage).
 
-    Extracts skills and profile from PDF/DOCX/TXT using LLM if available.
+    Extracts skills and profile from PDF/DOCX/TXT using agent-based LLM analysis.
     Returns structured profile for use in /api/search.
     """
     try:
@@ -406,62 +406,19 @@ async def upload_resume(file: UploadFile = File(...)):
                 detail=f"File too large (max {SecurityConfig.MAX_FILE_SIZE} bytes)"
             )
 
-        # Extract text from file (in-memory)
-        from jobscout.resume_parser import ResumeParser
-        parser = ResumeParser()
+        # Use agent-based analysis
+        from backend.resume_analysis import analyze_resume
 
-        # Parse to get raw text (different logic for different file types)
-        suffix = Path(file.filename).suffix.lower()
-        if suffix == '.pdf':
-            import io
-            import pdfplumber
-            text_chunks = []
-            with pdfplumber.open(io.BytesIO(content)) as pdf:
-                for page in pdf.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text_chunks.append(page_text)
-            resume_text = "\n".join(text_chunks)
-        elif suffix == '.docx':
-            import io
-            import docx
-            doc = docx.Document(io.BytesIO(content))
-            resume_text = "\n".join([para.text for para in doc.paragraphs])
-        else:  # .txt
-            resume_text = content.decode('utf-8', errors='ignore')
-
-        # Use LLM to extract profile (with fallback to keywords)
-        from backend.llm import extract_profile
-        profile = extract_profile(resume_text)
-
-        # Build warnings
-        warnings = []
-        if not profile["skills"]:
-            warnings.append("No skills detected - resume may need better formatting")
-
-        if not os.getenv("OPENAI_API_KEY"):
-            warnings.append("LLM extraction not available (OPENAI_API_KEY not set) - using keyword extraction")
-
-        # Return results
-        skills_list = sorted(profile["skills"])
+        result = await analyze_resume(content, file.filename)
 
         # Track metrics
+        profile = result.get("profile", {})
         metrics_tracker.record_resume_upload(
-            skills_count=len(profile["skills"]),
+            skills_count=len(profile.get("skills", [])),
             seniority=profile.get("seniority", "unknown")
         )
 
-        return {
-            "profile": {
-                "skills": skills_list,
-                "seniority": profile["seniority"],
-                "role_focus": profile["role_focus"],
-                "years_experience": profile["years_experience"],
-                "keywords": profile["keywords"]
-            },
-            "extracted_skills": skills_list,
-            "warnings": warnings
-        }
+        return result
 
     except HTTPException:
         raise
@@ -715,22 +672,13 @@ async def run_search_legacy():
 @app.post("/api/search")
 async def search_jobs(request: dict):
     """
-    Stateless job search endpoint (no disk persistence).
+    Stateless job search endpoint using agent-based matching.
 
     Accepts profile from upload-resume and search preferences.
     Returns matched jobs, filtered jobs, and optional email digest.
     """
     try:
-        from datetime import datetime
-        import hashlib
-        from jobscout.job_sources.rss_feeds import RemoteOKSource, WeWorkRemotelySource, HimalayasSource, JavascriptJobsSource
-        from jobscout.job_sources.remotive_api import RemotiveSource
-        from jobscout.job_sources.greenhouse_api import GreenhouseSource
-        from jobscout.job_sources.lever_api import LeverSource
-        from jobscout.job_parser import JobParser
-        from jobscout.scoring import JobScorer
-        from jobscout.resume_parser import ParsedResume
-        from jobscout.filters import HardExclusionFilters
+        from backend.agent_handler import run_agent_search
 
         # Parse request
         profile_data = request.get("profile", {})
@@ -745,108 +693,38 @@ async def search_jobs(request: dict):
                 detail="to_email is required when send_digest=true"
             )
 
-        # Build profile from request data
-        user_skills = set(profile_data.get("skills", []))
-        user_seniority = profile_data.get("seniority", "unknown")
-        user_years = profile_data.get("years_experience", 0) or 0
-        preferred_stack = set(preferences.get("preferred_tech_stack", []))
-        location_pref = preferences.get("location_preference", "remote")
-        max_age = preferences.get("max_job_age_days", 7)
-        min_threshold = preferences.get("min_score_threshold", 60.0)
-        llm_pref = preferences.get("use_llm_parsing")
-        has_api_key = bool(os.getenv("OPENAI_API_KEY"))
-        use_llm = (has_api_key and (llm_pref is None or bool(llm_pref)))
-
-        # Default job boards (only include boards that can return data without extra config)
-        default_boards = ["remoteok", "weworkremotely", "remotive", "himalayas", "jsjobs"]
+        # Add company boards to preferences if configured
+        default_boards = ["remoteok", "weworkremotely", "remotive", "himalayas"]
         if os.getenv("GREENHOUSE_BOARDS"):
             default_boards.append("greenhouse")
         if os.getenv("LEVER_COMPANIES"):
             default_boards.append("lever")
-        # Boolean search is now enabled by default when SERPER_API_KEY is set
-        if os.getenv("SERPER_API_KEY"):
-            default_boards.append("boolean")
 
         job_boards = preferences.get("job_boards", default_boards)
 
-        def _split_env_list(var_name: str) -> list[str]:
-            value = os.getenv(var_name, "")
-            if not value:
-                return []
-            return [item.strip() for item in value.split(",") if item.strip()]
+        # Update preferences for agent handler
+        preferences["job_boards"] = job_boards
+        preferences["location_preference"] = preferences.get("location_preference", "remote")
+        preferences["max_results"] = preferences.get("max_results", 7)
 
-        greenhouse_boards = preferences.get("greenhouse_boards") or _split_env_list("GREENHOUSE_BOARDS")
-        lever_companies = preferences.get("lever_companies") or _split_env_list("LEVER_COMPANIES")
-
-        # Create ParsedResume from profile
-        role_focus = profile_data.get("role_focus", []) or []
-        keywords = profile_data.get("keywords", []) or []
-        resume_role_keywords = list({*role_focus, *keywords})
-
-        resume = ParsedResume(
-            raw_text="",
-            skills=user_skills,
-            tools=set(),
-            seniority=user_seniority,
-            years_experience=float(user_years),
-            role_keywords=resume_role_keywords
+        # Run agent-based search
+        result = run_agent_search(
+            profile_data=profile_data,
+            preferences=preferences,
+            send_digest=send_digest,
+            to_email=to_email,
         )
 
-        # If the client didn't supply roles, use AI to recommend some for search queries
-        role_keywords_for_search = list(resume_role_keywords) or ["software engineer"]
-        if use_llm and has_api_key and not resume_role_keywords:
-            try:
-                advisor = RoleRecommender(
-                    api_key=os.getenv("OPENAI_API_KEY"),
-                    model=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
-                )
-                recommended_roles = advisor.recommend_roles(resume)
-                if recommended_roles:
-                    role_keywords_for_search = recommended_roles
-                    logger.info(f"Using AI-recommended role keywords: {role_keywords_for_search}")
-            except Exception as exc:
-                logger.warning(f"Role recommendation failed; using fallback keywords: {exc}")
+        return result
 
-        # Coarse role intent for filtering (backend/frontend/fullstack/etc.)
-        def _infer_user_roles(role_keywords: list[str], skills: set) -> set:
-            user_roles = set()
-
-            for keyword in role_keywords or []:
-                kw = keyword.lower()
-                if 'backend' in kw:
-                    user_roles.add('backend')
-                if 'frontend' in kw or 'front-end' in kw:
-                    user_roles.add('frontend')
-                if 'fullstack' in kw or 'full-stack' in kw or 'full stack' in kw:
-                    user_roles.add('fullstack')
-                if 'devops' in kw or 'sre' in kw or 'site reliability' in kw:
-                    user_roles.add('devops')
-                if 'data' in kw or 'machine learning' in kw or 'ml ' in kw or kw.endswith(' ml'):
-                    user_roles.add('data')
-                if 'mobile' in kw or 'ios' in kw or 'android' in kw:
-                    user_roles.add('mobile')
-
-            if user_roles:
-                return user_roles
-
-            backend_indicators = {'python', 'django', 'fastapi', 'flask', 'java', 'go', 'ruby', 'php', 'rust'}
-            frontend_indicators = {'react', 'vue', 'angular', 'javascript', 'typescript', 'css', 'html'}
-
-            backend_count = sum(1 for skill in skills if skill in backend_indicators)
-            frontend_count = sum(1 for skill in skills if skill in frontend_indicators)
-
-            if backend_count >= 3 and backend_count > frontend_count * 3:
-                user_roles.add('backend')
-            elif frontend_count >= 3 and frontend_count > backend_count * 3:
-                user_roles.add('frontend')
-            elif backend_count >= 1 and frontend_count >= 1:
-                user_roles.add('fullstack')
-
-            return user_roles if user_roles else {'unknown'}
-
-        user_role_categories = _infer_user_roles(role_keywords_for_search, user_skills)
-
-        # Fetch jobs from selected sources
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Search failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Search failed: {str(e)}"
+        )
         logger.info(f"Fetching jobs from: {', '.join(job_boards)}")
         all_jobs = []
 
