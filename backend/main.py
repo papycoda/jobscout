@@ -455,13 +455,9 @@ async def get_config():
     Frontend can override these by sending preferences in /api/search request.
     """
     try:
-        # Build default job boards list (only include configured boards that can return data)
-        default_boards = ["remoteok", "weworkremotely", "remotive"]
-        if os.getenv("GREENHOUSE_BOARDS"):
-            default_boards.append("greenhouse")
-        if os.getenv("LEVER_COMPANIES"):
-            default_boards.append("lever")
-        # Boolean search is now enabled by default when SERPER_API_KEY is set
+        # Build default job boards list (all available sources)
+        default_boards = ["company", "remoteok", "weworkremotely", "remotive", "himalayas", "jsjobs"]
+        # Boolean search if API key is available
         if os.getenv("SERPER_API_KEY"):
             default_boards.append("boolean")
 
@@ -709,12 +705,11 @@ async def search_jobs(request: dict):
                 detail="to_email is required when send_digest=true"
             )
 
-        # Add company boards to preferences if configured
-        default_boards = ["remoteok", "weworkremotely", "remotive", "himalayas"]
-        if os.getenv("GREENHOUSE_BOARDS"):
-            default_boards.append("greenhouse")
-        if os.getenv("LEVER_COMPANIES"):
-            default_boards.append("lever")
+        # Add all available job sources by default
+        default_boards = ["company", "remoteok", "weworkremotely", "remotive", "himalayas", "jsjobs"]
+        # Boolean search if API key is available
+        if os.getenv("SERPER_API_KEY"):
+            default_boards.append("boolean")
 
         job_boards = preferences.get("job_boards", default_boards)
 

@@ -1,11 +1,13 @@
 """Unified job fetcher that uses all sources."""
 
 import logging
+import os
 from typing import List, Optional
 from .base import JobListing
 from .company_boards import CompanyBoardsSource
-from .rss_feeds import RemoteOKSource, WeWorkRemotelySource, HimalayasSource
+from .rss_feeds import RemoteOKSource, WeWorkRemotelySource, HimalayasSource, JavascriptJobsSource
 from .remotive_api import RemotiveSource
+from .boolean_search import BooleanSearchSource
 
 
 logger = logging.getLogger(__name__)
@@ -14,8 +16,8 @@ logger = logging.getLogger(__name__)
 class JobFetcher:
     """Fetches jobs from multiple sources based on search queries."""
 
-    # Default sources if none specified
-    DEFAULT_SOURCES = ["company_boards", "remoteok", "weworkremotely", "remotive"]
+    # Default sources if none specified - include all available sources
+    DEFAULT_SOURCES = ["company_boards", "remoteok", "weworkremotely", "remotive", "himalayas", "jsjobs"]
 
     def __init__(
         self,
@@ -86,7 +88,7 @@ class JobFetcher:
         """Fetch from a specific source."""
         source_lower = source.lower()
 
-        if source_lower == "company_boards":
+        if source_lower == "company_boards" or source_lower == "company":
             return self._fetch_company_boards(search_queries, limit)
 
         elif source_lower == "remoteok":
@@ -100,6 +102,12 @@ class JobFetcher:
 
         elif source_lower == "remotive":
             return self._fetch_remotive(search_queries, limit)
+
+        elif source_lower == "jsjobs":
+            return self._fetch_jsjobs(search_queries, limit)
+
+        elif source_lower == "boolean":
+            return self._fetch_boolean(search_queries, limit)
 
         else:
             logger.warning(f"Unknown source: {source}")
@@ -159,6 +167,49 @@ class JobFetcher:
         src = RemotiveSource("Remotive")
         # Remotive has built-in filtering by category
         # Just return dev jobs
+        return src.fetch_jobs(limit=limit)
+
+    def _fetch_jsjobs(
+        self,
+        search_queries: Optional[List[str]],
+        limit: int,
+    ) -> List[JobListing]:
+        """Fetch from JavaScriptJobs."""
+        src = JavascriptJobsSource("JavaScriptJobs")
+        all_jobs = src.fetch_jobs(limit=limit)
+        return self._filter_by_search_terms(all_jobs, search_queries)
+
+    def _fetch_boolean(
+        self,
+        search_queries: Optional[List[str]],
+        limit: int,
+    ) -> List[JobListing]:
+        """Fetch from Boolean search (Google/Serper)."""
+        serper_key = os.getenv("SERPER_API_KEY")
+        if not serper_key:
+            logger.info("SERPER_API_KEY not set, skipping boolean search")
+            return []
+
+        # Build search parameters from profile
+        role_keywords = search_queries or ["software engineer", "developer"]
+        location_pref = self.location
+
+        # Infer user skills and seniority from search queries
+        user_skills = set()
+        for query in (search_queries or []):
+            # Extract skill-like terms
+            for word in query.split():
+                if len(word) > 2:
+                    user_skills.add(word.lower())
+
+        src = BooleanSearchSource(
+            resume_skills=user_skills,
+            role_keywords=role_keywords[:5],
+            seniority="unknown",
+            location_preference=location_pref,
+            max_job_age_days=7,
+            serper_api_key=serper_key
+        )
         return src.fetch_jobs(limit=limit)
 
     def _filter_by_search_terms(
