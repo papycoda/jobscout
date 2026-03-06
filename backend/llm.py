@@ -173,18 +173,32 @@ Return JSON in this exact format:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            token_limit=2000,  # Increased from 1000 to avoid cutoff
+            token_limit=4000,
         )
 
         # Debug: Log response metadata
-        logger.debug(f"LLM response status: {response.choices[0].finish_reason}")
+        finish_reason = response.choices[0].finish_reason
+        logger.debug(f"LLM response status: {finish_reason}")
         logger.debug(f"LLM usage: {response.usage}")
+
+        # If response was truncated, retry with higher token limit
+        if finish_reason == "length":
+            logger.warning("LLM response truncated by length, retrying with higher token limit...")
+            response = _call_chat_completion(
+                client,
+                DEFAULT_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                token_limit=8000,  # Higher limit on retry
+            )
 
         content = _get_text_content(response.choices[0].message.content)
 
         # Log the raw response for debugging
         if not content or not content.strip():
-            logger.error(f"LLM returned empty response. Model: {DEFAULT_MODEL}, Finish reason: {response.choices[0].finish_reason}")
+            logger.error(f"LLM returned empty response. Model: {DEFAULT_MODEL}, Finish reason: {finish_reason}")
             raise ValueError("Empty LLM response")
 
         logger.debug(f"LLM raw response (first 200 chars): {content[:200]}")
@@ -445,18 +459,32 @@ Return JSON in this exact format:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            token_limit=2000,  # Increased from 1000 to avoid cutoff
+            token_limit=4000,
         )
 
         # Debug: Log response metadata
-        logger.debug(f"LLM response status: {response.choices[0].finish_reason}")
+        finish_reason = response.choices[0].finish_reason
+        logger.debug(f"LLM response status: {finish_reason}")
         logger.debug(f"LLM usage: {response.usage}")
+
+        # If response was truncated, retry with higher token limit
+        if finish_reason == "length":
+            logger.warning("LLM response truncated by length, retrying with higher token limit...")
+            response = _call_chat_completion(
+                client,
+                DEFAULT_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                token_limit=8000,  # Higher limit on retry
+            )
 
         content = _get_text_content(response.choices[0].message.content)
 
         # Log the raw response for debugging
         if not content or not content.strip():
-            logger.error(f"LLM returned empty response. Model: {DEFAULT_MODEL}, Finish reason: {response.choices[0].finish_reason}")
+            logger.error(f"LLM returned empty response. Model: {DEFAULT_MODEL}, Finish reason: {finish_reason}")
             raise ValueError("Empty LLM response")
 
         logger.debug(f"LLM raw response (first 200 chars): {content[:200]}")
