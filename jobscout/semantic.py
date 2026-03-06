@@ -102,6 +102,11 @@ def preload_semantic_model() -> bool:
     Returns:
         True if a model (real or fallback) is ready, False otherwise.
     """
+    import os
+    if os.getenv("DISABLE_SEMANTIC_MODEL", "").lower() == "true":
+        logger.info("Semantic model disabled via DISABLE_SEMANTIC_MODEL env var")
+        return False
+
     try:
         model = _get_model()
         if model is None:
