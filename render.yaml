@@ -17,8 +17,8 @@ services:
         value: /var/data
       - key: PYTHON_VERSION
         value: 3.12.5
-      - key: DISABLE_SEMANTIC_MODEL
-        value: true
+      - key: JOBSCOUT_DISABLE_SEMANTIC_SCORING
+        value: "1"
     disk:
       name: data
       mountPath: /var/data
