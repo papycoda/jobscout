@@ -156,7 +156,9 @@ class JobScoutAgent:
         profile: Optional[CVProfile] = None,
     ) -> List[JobEvaluation]:
         """
-        Evaluate multiple jobs.
+        Evaluate multiple jobs using a single LLM call (batch mode).
+
+        Much faster than individual evaluations - one API call for all jobs.
 
         Args:
             jobs: List of job listings to evaluate
@@ -171,20 +173,201 @@ class JobScoutAgent:
         if profile is None:
             raise ValueError("No profile available. Call analyze_cv() first.")
 
-        evaluations = []
-        for i, job in enumerate(jobs):
-            try:
-                eval_result = self.evaluate_job(job, profile)
-                evaluations.append(eval_result)
+        if not jobs:
+            return []
 
-                if (i + 1) % 20 == 0:
-                    logger.info(f"Evaluated {i + 1}/{len(jobs)} jobs...")
+        # Use batch evaluation - single LLM call for all jobs
+        try:
+            return self._evaluate_jobs_batch_single_call(jobs, profile)
+        except Exception as e:
+            logger.warning(f"Batch evaluation failed: {e}, falling back to individual evaluations")
+            # Fallback to individual evaluations
+            evaluations = []
+            for i, job in enumerate(jobs):
+                try:
+                    eval_result = self.evaluate_job(job, profile)
+                    evaluations.append(eval_result)
+                    if (i + 1) % 20 == 0:
+                        logger.info(f"Evaluated {i + 1}/{len(jobs)} jobs...")
+                except Exception as e2:
+                    logger.warning(f"Failed to evaluate {job.title}: {e2}")
+                    continue
+            return evaluations
 
-            except Exception as e:
-                logger.warning(f"Failed to evaluate {job.title}: {e}")
-                continue
+    def _evaluate_jobs_batch_single_call(
+        self,
+        jobs: List[JobListing],
+        profile: CVProfile,
+    ) -> List[JobEvaluation]:
+        """
+        Evaluate all jobs in a single LLM call.
 
-        return evaluations
+        Args:
+            jobs: List of job listings to evaluate
+            profile: Candidate's CV profile
+
+        Returns:
+            List of JobEvaluation objects
+        """
+        # Limit batch size to avoid token limits
+        batch_size = 20
+        all_evaluations = []
+
+        for i in range(0, len(jobs), batch_size):
+            batch = jobs[i:i + batch_size]
+            batch_evals = self._evaluate_batch(batch, profile)
+            all_evaluations.extend(batch_evals)
+            logger.info(f"Batch evaluated {min(i + batch_size, len(jobs))}/{len(jobs)} jobs")
+
+        return all_evaluations
+
+    def _evaluate_batch(
+        self,
+        jobs: List[JobListing],
+        profile: CVProfile,
+    ) -> List[JobEvaluation]:
+        """
+        Evaluate a batch of jobs with one LLM call.
+
+        Args:
+            jobs: List of up to 20 jobs
+            profile: Candidate's CV profile
+
+        Returns:
+            List of JobEvaluation objects
+        """
+        # Build batch prompt with all jobs
+        prompt = self._batch_evaluation_prompt(jobs, profile)
+        system_prompt = self._job_evaluation_system_prompt()
+
+        try:
+            response = self.llm.generate_json(prompt, system_prompt)
+            evaluations = response.get("evaluations", [])
+
+            if not evaluations:
+                logger.warning("No evaluations returned from batch LLM call")
+                # Return empty evaluations
+                return []
+
+            # Parse evaluations and match to jobs
+            results = []
+            for idx, eval_data in enumerate(evaluations):
+                if idx >= len(jobs):
+                    break
+                job = jobs[idx]
+
+                # Normalize score
+                score = float(eval_data.get("match_score", 0))
+                score = max(0, min(100, score))
+
+                try:
+                    results.append(JobEvaluation.from_job_listing(
+                        job,
+                        match_score=score,
+                        is_match=bool(eval_data.get("is_match", False)),
+                        role_aligned=eval_data.get("role_aligned", True),
+                        seniority_aligned=eval_data.get("seniority_aligned", True),
+                        location_compatible=eval_data.get("location_compatible", True),
+                        required_skills_matched=eval_data.get("required_skills_matched", []),
+                        required_skills_missing=eval_data.get("required_skills_missing", []),
+                        summary=eval_data.get("summary", ""),
+                        concerns=eval_data.get("concerns", []),
+                        why_match=eval_data.get("why_match", ""),
+                        salary=eval_data.get("salary"),
+                    ))
+                except Exception as e:
+                    logger.warning(f"Failed to parse evaluation for job {idx}: {e}")
+                    # Add minimal evaluation
+                    results.append(JobEvaluation.from_job_listing(
+                        job,
+                        match_score=0,
+                        is_match=False,
+                        summary="Parse error",
+                    ))
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Batch evaluation LLM call failed: {e}")
+            # Return empty to trigger fallback
+            raise
+
+    def _batch_evaluation_prompt(self, jobs: List[JobListing], profile: CVProfile) -> str:
+        """Generate prompt for batch job evaluation."""
+        # Format candidate skills
+        skills_list = list(profile.skills)[:25]
+        skills_str = ', '.join(skills_list) if skills_list else "None"
+
+        # Build job descriptions
+        job_descriptions = []
+        for idx, job in enumerate(jobs):
+            description = job.description[:1500]  # Truncate for batch
+            job_descriptions.append(f"""
+Job {idx + 1}:
+- Title: {job.title}
+- Company: {job.company}
+- Location: {job.location}
+- URL: {job.apply_url}
+- Description: {description}
+""")
+
+        jobs_text = "\n".join(job_descriptions)
+
+        return f"""Evaluate {len(jobs)} jobs for the candidate.
+
+CANDIDATE PROFILE:
+- Role: {profile.role_primary}
+- Seniority: {profile.seniority}
+- Years Experience: {profile.years_experience}
+- Skills: {skills_str}
+- Languages: {', '.join(list(profile.languages))}
+- Frameworks: {', '.join(list(profile.frameworks))}
+- Databases: {', '.join(list(profile.databases))}
+
+{jobs_text}
+
+For EACH job, provide:
+1. ROLE ALIGNMENT: Is this the right type of role? (backend/frontend/data/devops/mobile)
+2. SKILLS MATCH: Does the candidate have the REQUIRED skills?
+3. SENIORITY: Is the experience level appropriate?
+4. LOCATION: Is the location compatible?
+
+Return ONLY valid JSON with this exact structure:
+{{
+  "evaluations": [
+    {{
+      "job_id": 0,
+      "match_score": 85,
+      "is_match": true,
+      "role_aligned": true,
+      "seniority_aligned": true,
+      "location_compatible": true,
+      "required_skills_matched": ["python", "sql"],
+      "required_skills_missing": ["django"],
+      "summary": "Good Python backend role, minor gaps",
+      "concerns": ["requires more Django experience"],
+      "why_match": "Strong Python and SQL match",
+      "salary": null
+    }},
+    ...
+  ]
+}}
+
+Remember: job_id corresponds to the order above (0 = first job, 1 = second job, etc.)
+
+Scoring guidelines:
+- 90-100: Excellent match - almost all requirements met
+- 75-89: Good match - most requirements met, minor gaps
+- 60-74: Possible match - some gaps but worth considering
+- Below 60: Not a match
+
+A job is NOT a match (is_match=false) if:
+- Missing core required skills (like backend dev applying to frontend)
+- Seniority significantly mismatched
+- Location incompatible
+- Score below 60
+
+Be conservative - it's better to miss a marginal match than include a bad one."""
 
     def rank_jobs(
         self,
