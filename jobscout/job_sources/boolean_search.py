@@ -108,34 +108,57 @@ class BooleanSearchSource(JobSource):
         """
         Build Boolean search queries from resume data.
 
-        Creates a single query searching all supported domains at once,
-        like: site:(boards.greenhouse.io OR jobs.lever.co OR jobs.breezy.hr OR jobs.ashbyhq.com)
+        Creates targeted queries like:
+        site:(boards.greenhouse.io OR jobs.lever.co OR jobs.ashbyhq.com)
+        ("Python Developer" OR "Python Engineer" OR "Software Engineer" Python)
+        AND ("remote" OR "work from home" OR "anywhere" OR "distributed")
         """
-        # Build skill OR clause
-        skill_terms = sorted(self.resume_skills)[:8]  # Limit to top 8
+        # Get top skills for targeting
+        skill_terms = sorted(self.resume_skills)[:5]  # Top 5 skills
         if not skill_terms:
             return []
 
-        skill_clause = " OR ".join(self._quote_term(s) for s in skill_terms)
+        # Build comprehensive role clause with skill combinations
+        # Format: ("Python Developer" OR "Python Engineer" OR "Backend Developer" Python)
+        role_parts = []
 
-        # Build role clause
-        role_terms = self.role_keywords[:3] if self.role_keywords else ["software engineer"]
-        role_clause = " OR ".join(self._quote_term(term) for term in role_terms)
+        # Add role keywords
+        for role in (self.role_keywords[:3] if self.role_keywords else ["software engineer", "developer"]):
+            role_parts.append(self._quote_term(role))
 
-        location_clause = self._build_location_clause()
+        # Add skill + role combinations for better targeting
+        for skill in skill_terms[:3]:  # Top 3 skills
+            role_parts.append(self._quote_term(f"{skill} developer"))
+            role_parts.append(self._quote_term(f"{skill} engineer"))
+
+        # Add standalone skill for broader matching
+        for skill in skill_terms[:2]:
+            role_parts.append(self._quote_term(skill))
+
+        role_clause = " OR ".join(role_parts)
+
+        # Build comprehensive location clause
+        # Format: ("remote" OR "work from home" OR "anywhere" OR "distributed" OR "telecommute" OR "virtual")
+        if self.location_preference == "remote":
+            location_clause = '("remote" OR "work from home" OR "anywhere" OR "distributed" OR "telecommute" OR "virtual")'
+        elif self.location_preference == "hybrid":
+            location_clause = '("hybrid" OR "remote" OR "work from home")'
+        else:
+            location_clause = None
+
+        # Seniority-based exclusions
         exclude_clause = self._build_exclude_clause()
+
+        # Date filter
         after_clause = self._build_after_clause()
 
         # Build single query with all domains
-        # Format: site:(domain1 OR domain2 OR domain3)
         all_domains = [_GREENHOUSE_DOMAIN, _LEVER_DOMAIN, _BREEZYHR_DOMAIN, _ASHBYHQ_DOMAIN]
         domain_clause = "site:(" + " OR ".join(all_domains) + ")"
 
-        parts = [
-            f"({role_clause})",
-            f"({skill_clause})",
-            domain_clause
-        ]
+        # Combine: site:(...) AND (role_clause) [AND location_clause] [after:date] [exclusions]
+        parts = [domain_clause, f"({role_clause})"]
+
         if location_clause:
             parts.append(location_clause)
         if after_clause:
@@ -143,7 +166,7 @@ class BooleanSearchSource(JobSource):
         if exclude_clause:
             parts.append(exclude_clause)
 
-        return [" ".join(parts)]  # Return single query
+        return [" AND ".join(parts)]
 
     def _serper_search(self, query: str, limit: int) -> List[Dict]:
         payload = {
@@ -503,12 +526,8 @@ class BooleanSearchSource(JobSource):
         return "Unknown"
 
     def _build_location_clause(self) -> str:
-        if self.location_preference == "remote":
-            return '"remote"'
-        if self.location_preference == "hybrid":
-            return '("hybrid" OR "remote")'
-        if self.location_preference == "onsite":
-            return '-"remote" -"hybrid"'
+        # This is now handled inline in _build_boolean_queries for better query structure
+        # Kept for backward compatibility
         return ""
 
     def _build_exclude_clause(self) -> str:
