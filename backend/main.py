@@ -18,6 +18,8 @@ except ImportError:
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from backend.security import (
     SecurityHeadersMiddleware,
@@ -93,6 +95,20 @@ async def _preload_semantic():
 
 # Initialize storage
 storage = Storage()
+
+# Static files directory
+static_dir = Path(__file__).parent / "static"
+static_dir.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Return favicon.ico."""
+    favicon_path = static_dir / "favicon.ico"
+    if favicon_path.exists():
+        return FileResponse(favicon_path, media_type="image/x-icon")
+    return FileResponse(static_dir / "favicon.svg", media_type="image/svg+xml")
 
 
 # Helper functions

@@ -111,14 +111,36 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         if SecurityConfig.ENABLE_SECURITY_HEADERS:
+            # Swagger docs load JS/CSS from jsDelivr by default.
+            docs_paths = {"/docs", "/docs/oauth2-redirect", "/redoc"}
+            normalized_path = request.url.path.rstrip("/") or "/"
+            is_docs_request = normalized_path in docs_paths
+
+            script_src = "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+            style_src = "style-src 'self' 'unsafe-inline'"
+            font_src = "font-src 'self' data:"
+            script_src_elem = "script-src-elem 'self'"
+            style_src_elem = "style-src-elem 'self'"
+            connect_src = "connect-src 'self'"
+
+            if is_docs_request:
+                script_src += " https://cdn.jsdelivr.net"
+                style_src += " https://cdn.jsdelivr.net"
+                font_src += " https://cdn.jsdelivr.net"
+                script_src_elem += " 'unsafe-inline' https://cdn.jsdelivr.net"
+                style_src_elem += " 'unsafe-inline' https://cdn.jsdelivr.net"
+                connect_src += " https://cdn.jsdelivr.net"
+
             # Content Security Policy
             csp_directives = [
                 "default-src 'self'",
-                "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-                "style-src 'self' 'unsafe-inline'",
+                script_src,
+                script_src_elem,
+                style_src,
+                style_src_elem,
                 "img-src 'self' data: https:",
-                "font-src 'self' data:",
-                "connect-src 'self'",
+                font_src,
+                connect_src,
                 "frame-ancestors 'none'",
                 "base-uri 'self'",
                 "form-action 'self'"
